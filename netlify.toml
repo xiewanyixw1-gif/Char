@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build:netlify"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
