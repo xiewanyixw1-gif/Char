@@ -24,6 +24,7 @@ const CHARACTER_CREATE_SYSTEM = `你是专业的 AI 角色设定创作师。用�
 const WORLD_SYSTEM = `你是世界观资料编辑。将输入拆成独立、清晰、可按关键词触发的世界书条目。覆盖必要的时代、地理、地点、国家、组织、制度、历史事件、人物关系、力量体系与特殊规则；不要把无关内容堆在一个条目里，不要编造输入中不存在的事实。只返回合法 JSON 数组，不要 Markdown、解释或代码围栏。每项包含 title, keys, content, category, priority, enabled。keys 是用中文逗号分隔的触发词字符串；category 只能是世界观、地点、组织、人物关系、历史事件、规则、力量体系之一；priority 为 1 到 100 的整数；enabled 为 true。`;
 
 const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行简短回复。";
+const VARIABLE_SYSTEM = "变量规范：{{char}} 始终代表当前角色，{{user}} 始终代表与角色互动的用户。必须原样保留双花括号变量，不要擅自替换为具体姓名，也不要替 {{user}} 决定言行、台词、心理或过去。";
 
 function revisionSystem(section?: RevisionSection) {
   const shared = "你正在根据用户的修改建议优化已经生成的角色卡。必须保留用户没有要求改变的核心设定，不要解释修改过程，不要输出前言、Markdown 或代码围栏。";
@@ -180,7 +181,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "接口地址必须是可公开访问的 HTTPS 地址" }, { status: 400 });
   }
 
-  const system = mode === "world"
+  const baseSystem = mode === "world"
     ? WORLD_SYSTEM
     : mode === "test"
       ? TEST_SYSTEM
@@ -189,6 +190,7 @@ export async function POST(request: Request) {
         : mode === "character-create"
           ? CHARACTER_CREATE_SYSTEM
           : CHARACTER_EXTRACT_SYSTEM;
+  const system = mode === "test" ? baseSystem : `${baseSystem}\n${VARIABLE_SYSTEM}`;
   const textRevision = mode === "revise" && ["persona", "biography", "appearance", "conflicts"].includes(section ?? "");
   const expectsJson = mode !== "test" && !textRevision;
   const controller = new AbortController();

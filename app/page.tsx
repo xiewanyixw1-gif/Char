@@ -2,7 +2,7 @@
 
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 
-type View = "character" | "world" | "api";
+type View = "character" | "library" | "world" | "api";
 type Tone = "mist" | "warm" | "paper";
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
@@ -34,6 +34,16 @@ type WorldEntry = {
   content: string;
   category: string;
   priority: number;
+  enabled: boolean;
+};
+
+type LibraryCategory = "变量规范" | "人设要求" | "世界书参考" | "互动规则" | "文风要求" | "禁用项";
+
+type LibraryEntry = {
+  id: string;
+  title: string;
+  category: LibraryCategory;
+  content: string;
   enabled: boolean;
 };
 
@@ -76,6 +86,18 @@ const DEFAULT_API: ApiPreset = {
   temperature: 0.7,
 };
 
+const DEFAULT_LIBRARY: LibraryEntry[] = [
+  {
+    id: "mori-variable-convention",
+    title: "角色与用户变量规范",
+    category: "变量规范",
+    content: "角色统一使用 {{char}}，对话用户统一使用 {{user}}。必须保留双花括号，不要擅自替换成具体姓名；不要替 {{user}} 决定言行、心理或过去。",
+    enabled: true,
+  },
+];
+
+const LIBRARY_CATEGORIES: LibraryCategory[] = ["变量规范", "人设要求", "世界书参考", "互动规则", "文风要求", "禁用项"];
+
 const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { docs: string; hint: string }> = {
   openai: {
     provider: "openai",
@@ -117,8 +139,9 @@ const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { 
 
 const NAV_ITEMS: Array<{ id: View; label: string; note: string; mark: string }> = [
   { id: "character", label: "角色卡", note: "整理与生成", mark: "01" },
-  { id: "world", label: "世界书", note: "规则与设定", mark: "02" },
-  { id: "api", label: "API 预设", note: "模型连接", mark: "03" },
+  { id: "library", label: "资料库", note: "长期提示与知识", mark: "02" },
+  { id: "world", label: "世界书", note: "规则与设定", mark: "03" },
+  { id: "api", label: "API 预设", note: "模型连接", mark: "04" },
 ];
 
 function uid() {
@@ -239,6 +262,7 @@ export default function Home() {
   const [generationMode, setGenerationMode] = useState<GenerationMode>("create");
   const [draft, setDraft] = useState<CharacterDraft>(EMPTY_DRAFT);
   const [entries, setEntries] = useState<WorldEntry[]>([]);
+  const [library, setLibrary] = useState<LibraryEntry[]>(DEFAULT_LIBRARY);
   const [api, setApi] = useState<ApiPreset>(DEFAULT_API);
   const [savedApis, setSavedApis] = useState<ApiPreset[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -262,12 +286,14 @@ export default function Home() {
     try {
       const storedDraft = localStorage.getItem("mori-character-draft");
       const storedEntries = localStorage.getItem("mori-world-entries");
+      const storedLibrary = localStorage.getItem("mori-prompt-library");
       const storedApi = localStorage.getItem("mori-api-preset");
       const storedSavedApis = localStorage.getItem("mori-custom-api-presets");
       const storedTone = localStorage.getItem("mori-tone") as Tone | null;
       const storedMode = localStorage.getItem("mori-generation-mode") as GenerationMode | null;
       if (storedDraft) setDraft({ ...EMPTY_DRAFT, ...JSON.parse(storedDraft) });
       if (storedEntries) setEntries(JSON.parse(storedEntries));
+      if (storedLibrary !== null) setLibrary(JSON.parse(storedLibrary));
       if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
       if (storedSavedApis) setSavedApis(JSON.parse(storedSavedApis));
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
@@ -291,20 +317,30 @@ export default function Home() {
     if (!ready) return;
     localStorage.setItem("mori-character-draft", JSON.stringify(draft));
     localStorage.setItem("mori-world-entries", JSON.stringify(entries));
+    localStorage.setItem("mori-prompt-library", JSON.stringify(library));
     localStorage.setItem("mori-api-preset", JSON.stringify(api));
     localStorage.setItem("mori-custom-api-presets", JSON.stringify(savedApis));
     localStorage.setItem("mori-tone", tone);
     localStorage.setItem("mori-generation-mode", generationMode);
-  }, [api, draft, entries, generationMode, ready, savedApis, tone]);
+  }, [api, draft, entries, generationMode, library, ready, savedApis, tone]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
   }, [draft]);
 
+  const enabledLibraryText = useMemo(() => library
+    .filter((item) => item.enabled && item.content.trim())
+    .map((item, index) => `【资料库 ${index + 1}｜${item.category}｜${item.title || "未命名"}】\n${item.content.trim()}`)
+    .join("\n\n"), [library]);
+
   const updateDraft = <K extends keyof CharacterDraft>(key: K, value: CharacterDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
+
+  const withLibrary = (prompt: string) => enabledLibraryText
+    ? `${prompt}\n\n【长期资料库｜以下内容必须作为创作约束与参考】\n${enabledLibraryText}`
+    : prompt;
 
   const chooseProvider = (provider: Provider) => {
     const selected = PROVIDERS[provider];
@@ -408,9 +444,9 @@ export default function Home() {
     try {
       const text = await callModel(
         generationMode === "create" ? "character-create" : "character-extract",
-        generationMode === "create"
+        withLibrary(generationMode === "create"
           ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}`
-          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`,
+          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`),
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[] };
       setDraft((current) => ({
@@ -470,7 +506,7 @@ export default function Home() {
     try {
       const text = await callModel(
         "revise",
-        `【角色与世界背景】\n${draft.source || "未提供"}\n${draft.background || ""}\n\n【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前内容】\n${JSON.stringify(currentContent[section], null, 2)}\n\n【用户修改建议】\n${suggestion}`,
+        withLibrary(`【角色与世界背景】\n${draft.source || "未提供"}\n${draft.background || ""}\n\n【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前内容】\n${JSON.stringify(currentContent[section], null, 2)}\n\n【用户修改建议】\n${suggestion}`),
         section,
       );
 
@@ -521,7 +557,7 @@ export default function Home() {
     try {
       const text = await callModel(
         "world",
-        `【世界背景】\n${draft.background || "未单独提供"}\n\n【角色资料】\n${draft.source || draft.persona || "未提供"}`,
+        withLibrary(`【世界背景】\n${draft.background || "未单独提供"}\n\n【角色资料】\n${draft.source || draft.persona || "未提供"}`),
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
       if (!Array.isArray(parsed)) throw new Error("模型返回的世界书格式不正确");
@@ -564,7 +600,7 @@ export default function Home() {
   const exportCharacter = (format: "json" | "txt") => {
     const filename = `${draft.name || "未命名角色"}_角色卡.${format}`;
     if (format === "json") {
-      saveFile(filename, JSON.stringify({ format: "mori-character-card-v1", ...draft, worldBook: entries }, null, 2), "application/json");
+      saveFile(filename, JSON.stringify({ format: "mori-character-card-v1", ...draft, worldBook: entries, promptLibrary: library }, null, 2), "application/json");
       return;
     }
     const content = [
@@ -618,6 +654,67 @@ export default function Home() {
       { id: uid(), title: "新条目", keys: "", content: "", category: "世界观", priority: 100, enabled: true },
     ]);
     setNotice("已添加空白世界书条目");
+  };
+
+  const addLibraryEntry = (category: LibraryCategory = "人设要求") => {
+    setLibrary((current) => [
+      ...current,
+      { id: uid(), title: "新资料", category, content: "", enabled: true },
+    ]);
+    setNotice("已添加资料库条目");
+  };
+
+  const updateLibraryEntry = (id: string, patch: Partial<LibraryEntry>) => {
+    setLibrary((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  const exportLibrary = () => {
+    saveFile("MORI_角色资料库.json", JSON.stringify({
+      format: "mori-prompt-library-v1",
+      variables: { character: "{{char}}", user: "{{user}}" },
+      entries: library,
+    }, null, 2), "application/json");
+  };
+
+  const importLibrary = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      let imported: LibraryEntry[] = [];
+      try {
+        const payload = JSON.parse(text) as { entries?: unknown } | unknown[];
+        const rawEntries = Array.isArray(payload)
+          ? payload
+          : payload && typeof payload === "object" && "entries" in payload
+            ? Array.isArray(payload.entries) ? payload.entries : Object.values(payload.entries as Record<string, unknown>)
+            : [];
+        imported = rawEntries.flatMap((raw, index) => {
+          if (!raw || typeof raw !== "object") return [];
+          const item = raw as Record<string, unknown>;
+          const content = typeof item.content === "string" ? item.content : "";
+          if (!content.trim()) return [];
+          const rawCategory = typeof item.category === "string" ? item.category : "世界书参考";
+          const category = LIBRARY_CATEGORIES.includes(rawCategory as LibraryCategory) ? rawCategory as LibraryCategory : "世界书参考";
+          const key = Array.isArray(item.key) ? item.key.filter((value): value is string => typeof value === "string").join("、") : "";
+          return [{
+            id: uid(),
+            title: typeof item.title === "string" ? item.title : typeof item.comment === "string" ? item.comment : key || `导入资料 ${index + 1}`,
+            category,
+            content,
+            enabled: item.enabled !== false && item.disable !== true,
+          }];
+        });
+      } catch {
+        if (text.trim()) imported = [{ id: uid(), title: file.name.replace(/\.[^.]+$/, ""), category: "世界书参考", content: text.trim(), enabled: true }];
+      }
+      if (!imported.length) throw new Error("没有找到可导入的文字条目");
+      setLibrary((current) => [...current, ...imported]);
+      setNotice(`已导入 ${imported.length} 条资料`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "资料库导入失败");
+    }
+    event.target.value = "";
   };
 
   return (
@@ -861,6 +958,52 @@ export default function Home() {
                 <button className="quiet-button" onClick={() => exportCharacter("txt")}>下载 TXT</button>
                 <button className="primary-button compact" onClick={() => exportCharacter("json")}>下载 JSON <span>↓</span></button>
               </div>
+            </section>
+          </div>
+        )}
+
+        {view === "library" && (
+          <div className="page-wrap library-page">
+            <section className="page-intro">
+              <div><span className="eyebrow">CREATIVE LIBRARY · 创作资料库</span><h1>把长期要求，交给 AI 一直记住。</h1><p>保存人设要求、其他世界书、互动规则与禁用项。启用的条目会自动加入角色生成、世界书生成和分区优化。</p></div>
+              <div className="page-intro-actions">
+                <label className="file-button">导入资料<input type="file" accept=".json,.txt,.md,application/json,text/plain" onChange={importLibrary} /></label>
+                <button className="quiet-button" onClick={exportLibrary} disabled={!library.length}>导出</button>
+                <button className="primary-button compact" onClick={() => addLibraryEntry()}>＋ 新建</button>
+              </div>
+            </section>
+
+            <section className="variable-guide">
+              <div><span>CHARACTER</span><code>{"{{char}}"}</code><p>代表当前正在塑造或扮演的角色。</p></div>
+              <div><span>USER</span><code>{"{{user}}"}</code><p>代表与角色对话的用户，不替用户决定言行和心理。</p></div>
+              <div className="library-summary"><b>{library.filter((item) => item.enabled && item.content.trim()).length}</b><span>条资料正在参与 AI 生成</span></div>
+            </section>
+
+            <section className="library-quick-add" aria-label="快速添加资料类型">
+              <span>快速添加</span>
+              {LIBRARY_CATEGORIES.filter((category) => category !== "变量规范").map((category) => <button key={category} onClick={() => addLibraryEntry(category)}>＋ {category}</button>)}
+            </section>
+
+            <section className="library-list">
+              {library.length === 0 ? (
+                <div className="empty-state"><span>空</span><h2>还没有长期资料</h2><p>添加一条人设要求，或导入已有的世界书 JSON / TXT。</p><button className="secondary-button" onClick={() => addLibraryEntry()}>新建第一条资料</button></div>
+              ) : library.map((item, index) => (
+                <article className={`library-entry ${item.enabled ? "active" : ""}`} key={item.id}>
+                  <div className="library-entry-number">{String(index + 1).padStart(2, "0")}</div>
+                  <div className="library-entry-main">
+                    <div className="library-entry-topline">
+                      <input aria-label={`资料 ${index + 1} 标题`} value={item.title} onChange={(event) => updateLibraryEntry(item.id, { title: event.target.value })} placeholder="资料标题" />
+                      <select aria-label={`资料 ${index + 1} 类型`} value={item.category} onChange={(event) => updateLibraryEntry(item.id, { category: event.target.value as LibraryCategory })}>{LIBRARY_CATEGORIES.map((category) => <option key={category}>{category}</option>)}</select>
+                    </div>
+                    <textarea aria-label={`资料 ${index + 1} 内容`} rows={7} value={item.content} onChange={(event) => updateLibraryEntry(item.id, { content: event.target.value })} placeholder={`写下 AI 需要长期遵守或参考的内容。角色用 {{char}}，用户用 {{user}}。`} />
+                    <div className="library-entry-footer">
+                      <label className="switch"><input type="checkbox" checked={item.enabled} onChange={(event) => updateLibraryEntry(item.id, { enabled: event.target.checked })} /><span /> {item.enabled ? "已启用" : "已停用"}</label>
+                      <small>{item.content.length} 字</small>
+                      <button onClick={() => setLibrary((current) => current.filter((entry) => entry.id !== item.id))}>删除</button>
+                    </div>
+                  </div>
+                </article>
+              ))}
             </section>
           </div>
         )}
