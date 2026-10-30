@@ -957,7 +957,26 @@ export default function Home() {
               <div className="section-heading"><div><span>ACTIVE PRESET</span><h2>{api.name}</h2></div><a href={PROVIDERS[api.provider].docs} target="_blank" rel="noreferrer">查看官方文档 ↗</a></div>
               <div className="field-grid api-fields">
                 <Field label="预设名称" value={api.name} onChange={(value) => setApi((current) => ({ ...current, name: value }))} placeholder="我的模型" />
-                <label className="field"><span className="field-label">模型名称 <i>必填</i></span><div className="model-picker"><input list="mori-model-options" value={api.model} onChange={(event) => setApi((current) => ({ ...current, model: event.target.value }))} placeholder="选择或手动输入模型 ID" /><button type="button" onClick={loadModels} disabled={loadingModels || busy !== null}>{loadingModels ? "拉取中…" : "拉取模型"}</button></div><datalist id="mori-model-options">{modelOptions.map((model) => <option key={model} value={model} />)}</datalist><small className="field-helper">拉取成功后可从输入框建议中选择，也可以手动填写。</small></label>
+                <label className="field">
+                  <span className="field-label">模型名称 <i>必填</i></span>
+                  <div className="model-picker">
+                    <div className="model-fields">
+                      {modelOptions.length > 0 && (
+                        <select
+                          aria-label="选择已拉取的模型"
+                          value={modelOptions.includes(api.model) ? api.model : ""}
+                          onChange={(event) => event.target.value && setApi((current) => ({ ...current, model: event.target.value }))}
+                        >
+                          <option value="">已拉取 {modelOptions.length} 个模型，点击选择</option>
+                          {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+                        </select>
+                      )}
+                      <input aria-label="手动输入模型 ID" value={api.model} onChange={(event) => setApi((current) => ({ ...current, model: event.target.value }))} placeholder="也可以手动输入模型 ID" />
+                    </div>
+                    <button type="button" onClick={loadModels} disabled={loadingModels || busy !== null}>{loadingModels ? "拉取中…" : "拉取模型"}</button>
+                  </div>
+                  <small className="field-helper">{modelOptions.length > 0 ? `列表中共有 ${modelOptions.length} 个模型；下拉选择或手动输入均可。` : "拉取模型后会显示完整下拉列表，也可以直接手动填写。"}</small>
+                </label>
                 <label className="field field-wide"><span className="field-label">API Endpoint <i>必填</i></span><input value={api.endpoint} onChange={(event) => { setApi((current) => ({ ...current, endpoint: event.target.value })); setModelOptions([]); }} placeholder="https://站点地址/v1 或完整的 /chat/completions 地址" /><small className="field-helper">兼容接口可填写站点的 /v1 基础地址，生成时会自动使用 /chat/completions。</small></label>
                 <label className="field field-wide"><span className="field-label">模型列表地址 <i>可选</i></span><input value={api.modelsEndpoint} onChange={(event) => setApi((current) => ({ ...current, modelsEndpoint: event.target.value }))} placeholder="留空时根据 API Endpoint 自动推导 /models" /><small className="field-helper">只有站点使用特殊路径时才需要填写；一般留空即可。</small></label>
                 <label className="field field-wide"><span className="field-label">API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={api.apiKey} onChange={(event) => setApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>

@@ -392,6 +392,9 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
 .api-form { margin-top: 14px; }
 .api-fields { grid-template-columns: 1fr 1fr; }
 .model-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.model-fields { display: grid; gap: 7px; min-width: 0; }
+.model-fields select { width: 100%; height: 41px; padding: 0 34px 0 12px; border: 1px solid #d9dbda; border-radius: 8px; outline: 0; background: #fff; font-size: 11px; }
+.model-fields select:focus { border-color: #888c8a; box-shadow: 0 0 0 3px rgba(45,49,47,0.05); }
 .model-picker button { min-width: 84px; padding: 0 12px; border: 1px solid #cfd2d0; border-radius: 8px; background: #fff; color: #535755; font-size: 9px; font-weight: 700; }
 .model-picker button:hover:not(:disabled) { border-color: #777c79; color: var(--ink); }
 .model-picker button:disabled { cursor: wait; opacity: 0.55; }
