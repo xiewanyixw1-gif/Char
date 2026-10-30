@@ -4,12 +4,13 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 
 type GenerateRequest = {
-  mode?: "character-create" | "character-extract" | "world" | "revise" | "test";
+  mode?: "character-create" | "character-extract" | "world" | "revise" | "test" | "models";
   section?: RevisionSection;
   prompt?: string;
   preset?: {
     provider?: Provider;
     endpoint?: string;
+    modelsEndpoint?: string;
     model?: string;
     apiKey?: string;
     temperature?: number;
@@ -57,7 +58,13 @@ function blockedHost(hostname: string) {
 
 function normalizedEndpoint(provider: Provider, rawEndpoint: string, model: string, apiKey: string) {
   let endpoint = rawEndpoint.trim();
-  if (provider === "custom" && /\/v1\/?$/i.test(endpoint)) endpoint = `${endpoint.replace(/\/$/, "")}/chat/completions`;
+  if (provider === "custom") {
+    const url = new URL(endpoint);
+    const path = url.pathname.replace(/\/+$/, "");
+    if (!path || path === "/") url.pathname = "/v1/chat/completions";
+    else if (/\/v1$/i.test(path)) url.pathname = `${path}/chat/completions`;
+    endpoint = url.toString();
+  }
   if (provider === "gemini") {
     endpoint = endpoint.replace("{model}", encodeURIComponent(model));
     const url = new URL(endpoint);
@@ -65,6 +72,27 @@ function normalizedEndpoint(provider: Provider, rawEndpoint: string, model: stri
     return url;
   }
   return new URL(endpoint);
+}
+
+function normalizedModelsEndpoint(provider: Provider, rawEndpoint: string, rawModelsEndpoint: string, apiKey: string) {
+  const configured = rawModelsEndpoint.trim();
+  let endpoint = configured || rawEndpoint.trim();
+  endpoint = endpoint.replace("{model}", "model");
+  const url = new URL(endpoint);
+
+  if (!configured) {
+    const path = url.pathname.replace(/\/+$/, "");
+    if (/\/chat\/completions$/i.test(path)) url.pathname = path.replace(/\/chat\/completions$/i, "/models");
+    else if (/\/responses$/i.test(path)) url.pathname = path.replace(/\/responses$/i, "/models");
+    else if (/\/messages$/i.test(path)) url.pathname = path.replace(/\/messages$/i, "/models");
+    else if (/\/models\/.*:generateContent$/i.test(path)) url.pathname = path.replace(/\/models\/.*:generateContent$/i, "/models");
+    else if (!path || path === "/") url.pathname = provider === "gemini" ? "/v1beta/models" : "/v1/models";
+    else if (/\/v1(?:beta)?$/i.test(path)) url.pathname = `${path}/models`;
+    else url.pathname = `${path}/models`;
+  }
+
+  if (provider === "gemini") url.searchParams.set("key", apiKey);
+  return url;
 }
 
 export async function POST(request: Request) {
@@ -80,13 +108,69 @@ export async function POST(request: Request) {
   const prompt = body.prompt?.trim() ?? "";
   const provider = body.preset?.provider ?? "openai";
   const endpoint = body.preset?.endpoint?.trim() ?? "";
+  const modelsEndpoint = body.preset?.modelsEndpoint?.trim() ?? "";
   const model = body.preset?.model?.trim() ?? "";
   const apiKey = body.preset?.apiKey?.trim() ?? "";
   const temperature = Math.max(0, Math.min(1.5, Number(body.preset?.temperature) || 0.7));
 
-  if (!prompt || prompt.length > 140000) return NextResponse.json({ error: "资料为空或内容过长" }, { status: 400 });
-  if (!endpoint || !model || !apiKey) return NextResponse.json({ error: "请完整填写接口地址、模型名称和 API Key" }, { status: 400 });
+  if (mode !== "models" && (!prompt || prompt.length > 140000)) return NextResponse.json({ error: "资料为空或内容过长" }, { status: 400 });
+  if (!endpoint || (!model && mode !== "models") || !apiKey) return NextResponse.json({ error: "请完整填写接口地址、模型名称和 API Key" }, { status: 400 });
   if (!["openai", "anthropic", "gemini", "custom"].includes(provider)) return NextResponse.json({ error: "不支持的 API 类型" }, { status: 400 });
+
+  if (mode === "models") {
+    let target: URL;
+    try {
+      target = normalizedModelsEndpoint(provider, endpoint, modelsEndpoint, apiKey);
+      if (target.protocol !== "https:" || blockedHost(target.hostname)) throw new Error("unsafe");
+    } catch {
+      return NextResponse.json({ error: "模型列表地址必须是可公开访问的 HTTPS 地址" }, { status: 400 });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (provider === "anthropic") {
+        headers["x-api-key"] = apiKey;
+        headers["anthropic-version"] = "2023-06-01";
+      } else if (provider !== "gemini") {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
+      const response = await fetch(target, { headers, signal: controller.signal });
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) {
+        const apiError = payload.error as { message?: string } | string | undefined;
+        const message = typeof apiError === "string" ? apiError : apiError?.message;
+        return NextResponse.json({ error: message || `模型列表接口返回 ${response.status}` }, { status: response.status < 500 ? response.status : 502 });
+      }
+
+      const candidates = (Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : []) as Array<Record<string, unknown> | string>;
+      const models = candidates
+        .filter((item) => {
+          if (typeof item === "string") return true;
+          const methods = item.supportedGenerationMethods;
+          return !Array.isArray(methods) || methods.includes("generateContent");
+        })
+        .map((item) => {
+          if (typeof item === "string") return item;
+          const value = item.id ?? item.name;
+          return typeof value === "string" ? value.replace(/^models\//, "") : "";
+        })
+        .filter(Boolean)
+        .filter((value, index, list) => list.indexOf(value) === index)
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 1000);
+
+      if (!models.length) return NextResponse.json({ error: "接口已连接，但没有返回可用模型" }, { status: 502 });
+      return NextResponse.json({ models });
+    } catch (error) {
+      const message = error instanceof Error && error.name === "AbortError" ? "拉取模型超时，请稍后重试" : "无法拉取模型，请检查接口地址和 API Key";
+      return NextResponse.json({ error: message }, { status: 502 });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   let target: URL;
   try {

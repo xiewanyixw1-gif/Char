@@ -38,9 +38,11 @@ type WorldEntry = {
 };
 
 type ApiPreset = {
+  id?: string;
   provider: Provider;
   name: string;
   endpoint: string;
+  modelsEndpoint: string;
   model: string;
   apiKey: string;
   temperature: number;
@@ -68,6 +70,7 @@ const DEFAULT_API: ApiPreset = {
   provider: "openai",
   name: "OpenAI",
   endpoint: "https://api.openai.com/v1/chat/completions",
+  modelsEndpoint: "https://api.openai.com/v1/models",
   model: "gpt-4.1-mini",
   apiKey: "",
   temperature: 0.7,
@@ -78,6 +81,7 @@ const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { 
     provider: "openai",
     name: "OpenAI",
     endpoint: "https://api.openai.com/v1/chat/completions",
+    modelsEndpoint: "https://api.openai.com/v1/models",
     model: "gpt-4.1-mini",
     docs: "https://platform.openai.com/docs/api-reference/chat/create",
     hint: "OpenAI 官方接口",
@@ -86,6 +90,7 @@ const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { 
     provider: "anthropic",
     name: "Anthropic",
     endpoint: "https://api.anthropic.com/v1/messages",
+    modelsEndpoint: "https://api.anthropic.com/v1/models",
     model: "claude-3-7-sonnet-latest",
     docs: "https://docs.anthropic.com/en/api/messages",
     hint: "Claude Messages API",
@@ -94,6 +99,7 @@ const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { 
     provider: "gemini",
     name: "Gemini",
     endpoint: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    modelsEndpoint: "https://generativelanguage.googleapis.com/v1beta/models",
     model: "gemini-2.0-flash",
     docs: "https://ai.google.dev/gemini-api/docs/text-generation",
     hint: "Google Gemini API",
@@ -102,6 +108,7 @@ const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { 
     provider: "custom",
     name: "兼容接口",
     endpoint: "https://your-api.example.com/v1/chat/completions",
+    modelsEndpoint: "",
     model: "your-model-name",
     docs: "https://platform.openai.com/docs/api-reference/chat/create",
     hint: "OpenAI Chat Completions 兼容格式",
@@ -116,6 +123,14 @@ const NAV_ITEMS: Array<{ id: View; label: string; note: string; mark: string }> 
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function endpointHost(endpoint: string) {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint || "未填写地址";
+  }
 }
 
 function cleanJsonText(text: string) {
@@ -225,6 +240,9 @@ export default function Home() {
   const [draft, setDraft] = useState<CharacterDraft>(EMPTY_DRAFT);
   const [entries, setEntries] = useState<WorldEntry[]>([]);
   const [api, setApi] = useState<ApiPreset>(DEFAULT_API);
+  const [savedApis, setSavedApis] = useState<ApiPreset[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
   const [busy, setBusy] = useState<"character" | "world" | "test" | null>(null);
   const [revising, setRevising] = useState<RevisionSection | null>(null);
   const [revisionNotes, setRevisionNotes] = useState<Record<RevisionSection, string>>({
@@ -245,11 +263,13 @@ export default function Home() {
       const storedDraft = localStorage.getItem("mori-character-draft");
       const storedEntries = localStorage.getItem("mori-world-entries");
       const storedApi = localStorage.getItem("mori-api-preset");
+      const storedSavedApis = localStorage.getItem("mori-custom-api-presets");
       const storedTone = localStorage.getItem("mori-tone") as Tone | null;
       const storedMode = localStorage.getItem("mori-generation-mode") as GenerationMode | null;
       if (storedDraft) setDraft({ ...EMPTY_DRAFT, ...JSON.parse(storedDraft) });
       if (storedEntries) setEntries(JSON.parse(storedEntries));
       if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
+      if (storedSavedApis) setSavedApis(JSON.parse(storedSavedApis));
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
       if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
     } catch {
@@ -272,9 +292,10 @@ export default function Home() {
     localStorage.setItem("mori-character-draft", JSON.stringify(draft));
     localStorage.setItem("mori-world-entries", JSON.stringify(entries));
     localStorage.setItem("mori-api-preset", JSON.stringify(api));
+    localStorage.setItem("mori-custom-api-presets", JSON.stringify(savedApis));
     localStorage.setItem("mori-tone", tone);
     localStorage.setItem("mori-generation-mode", generationMode);
-  }, [api, draft, entries, generationMode, ready, tone]);
+  }, [api, draft, entries, generationMode, ready, savedApis, tone]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
@@ -287,8 +308,79 @@ export default function Home() {
 
   const chooseProvider = (provider: Provider) => {
     const selected = PROVIDERS[provider];
-    setApi((current) => ({ ...current, ...selected, provider, apiKey: current.provider === provider ? current.apiKey : "" }));
+    setApi((current) => ({ ...current, ...selected, id: undefined, provider, apiKey: current.provider === provider ? current.apiKey : "" }));
+    setModelOptions([]);
     setNotice(`已切换到 ${selected.name} 预设`);
+  };
+
+  const chooseSavedApi = (preset: ApiPreset) => {
+    setApi({ ...DEFAULT_API, ...preset, provider: "custom" });
+    setModelOptions([]);
+    setNotice(`已载入 ${preset.name}`);
+  };
+
+  const saveCurrentApi = () => {
+    if (api.provider !== "custom") {
+      setNotice("官方预设会自动保留；需要新增站点时请选择“兼容接口”");
+      return;
+    }
+    if (!api.name.trim() || !api.endpoint.trim()) {
+      setNotice("请填写预设名称和 API Endpoint");
+      return;
+    }
+    const saved = { ...api, id: api.id ?? uid(), provider: "custom" as const };
+    setSavedApis((current) => {
+      const exists = current.some((item) => item.id === saved.id);
+      return exists ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved];
+    });
+    setApi(saved);
+    setNotice(`已在本机保存站点“${saved.name}”`);
+  };
+
+  const removeSavedApi = (id: string) => {
+    setSavedApis((current) => current.filter((item) => item.id !== id));
+    if (api.id === id) {
+      setApi({ ...DEFAULT_API, ...PROVIDERS.custom, id: undefined, apiKey: "", temperature: api.temperature });
+      setModelOptions([]);
+    }
+    setNotice("已删除该自定义站点");
+  };
+
+  const clearCurrentApiKey = () => {
+    const currentId = api.id;
+    setApi((current) => ({ ...current, apiKey: "" }));
+    if (currentId) {
+      setSavedApis((current) => current.map((item) => item.id === currentId ? { ...item, apiKey: "" } : item));
+    }
+    setNotice("API Key 已从当前预设和本机记录中清除");
+  };
+
+  const loadModels = async () => {
+    if (!api.apiKey.trim() || !api.endpoint.trim()) {
+      setNotice("请先填写 API Endpoint 和 API Key");
+      return;
+    }
+    setLoadingModels(true);
+    setNotice("正在从 API 站点拉取模型…");
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "models", preset: api }),
+      });
+      const payload = (await response.json()) as { models?: string[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "模型列表拉取失败");
+      const models = payload.models ?? [];
+      setModelOptions(models);
+      if (models.length && (!api.model.trim() || api.model === "your-model-name")) {
+        setApi((current) => ({ ...current, model: models[0] }));
+      }
+      setNotice(`已拉取 ${models.length} 个模型，可从模型名称的下拉建议中选择`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "模型列表拉取失败");
+    } finally {
+      setLoadingModels(false);
+    }
   };
 
   const callModel = async (mode: ModelMode, prompt: string, section?: RevisionSection) => {
@@ -830,7 +922,7 @@ export default function Home() {
         {view === "api" && (
           <div className="page-wrap api-page">
             <section className="page-intro">
-              <div><span className="eyebrow">MODEL CONNECTION · 模型连接</span><h1>连接你信任的模型服务。</h1><p>切换预设即可改变生成引擎。密钥只保存在当前浏览器，不会写入网站数据库。</p></div>
+              <div><span className="eyebrow">MODEL CONNECTION · 模型连接</span><h1>连接你信任的模型服务。</h1><p>可添加多个 OpenAI 兼容站点并拉取模型列表。密钥只保存在当前浏览器，不会写入网站数据库。</p></div>
               <div className={`connection-badge ${api.apiKey ? "ready" : ""}`}><span />{api.apiKey ? "已填写密钥" : "等待配置"}</div>
             </section>
 
@@ -844,26 +936,45 @@ export default function Home() {
               ))}
             </section>
 
+            {savedApis.length > 0 && (
+              <section className="saved-api-section" aria-label="已保存的自定义 API 站点">
+                <div className="saved-api-heading"><div><span>SAVED SITES</span><h2>我的兼容站点</h2></div><small>仅保存在当前浏览器</small></div>
+                <div className="saved-api-grid">
+                  {savedApis.map((preset) => (
+                    <article key={preset.id} className={api.id === preset.id ? "active" : ""}>
+                      <button className="saved-api-select" onClick={() => chooseSavedApi(preset)}>
+                        <span className="provider-mark">{preset.name.trim().slice(0, 1) || "＋"}</span>
+                        <span><b>{preset.name}</b><small>{endpointHost(preset.endpoint)} · {preset.model || "未选模型"}</small></span>
+                      </button>
+                      <button className="saved-api-delete" onClick={() => preset.id && removeSavedApi(preset.id)} aria-label={`删除 ${preset.name}`}>×</button>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+
             <section className="editor-card api-form">
               <div className="section-heading"><div><span>ACTIVE PRESET</span><h2>{api.name}</h2></div><a href={PROVIDERS[api.provider].docs} target="_blank" rel="noreferrer">查看官方文档 ↗</a></div>
               <div className="field-grid api-fields">
                 <Field label="预设名称" value={api.name} onChange={(value) => setApi((current) => ({ ...current, name: value }))} placeholder="我的模型" />
-                <Field label="模型名称" value={api.model} onChange={(value) => setApi((current) => ({ ...current, model: value }))} placeholder="模型 ID" required />
-                <label className="field field-wide"><span className="field-label">API Endpoint <i>必填</i></span><input value={api.endpoint} onChange={(event) => setApi((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://…" /></label>
+                <label className="field"><span className="field-label">模型名称 <i>必填</i></span><div className="model-picker"><input list="mori-model-options" value={api.model} onChange={(event) => setApi((current) => ({ ...current, model: event.target.value }))} placeholder="选择或手动输入模型 ID" /><button type="button" onClick={loadModels} disabled={loadingModels || busy !== null}>{loadingModels ? "拉取中…" : "拉取模型"}</button></div><datalist id="mori-model-options">{modelOptions.map((model) => <option key={model} value={model} />)}</datalist><small className="field-helper">拉取成功后可从输入框建议中选择，也可以手动填写。</small></label>
+                <label className="field field-wide"><span className="field-label">API Endpoint <i>必填</i></span><input value={api.endpoint} onChange={(event) => { setApi((current) => ({ ...current, endpoint: event.target.value })); setModelOptions([]); }} placeholder="https://站点地址/v1 或完整的 /chat/completions 地址" /><small className="field-helper">兼容接口可填写站点的 /v1 基础地址，生成时会自动使用 /chat/completions。</small></label>
+                <label className="field field-wide"><span className="field-label">模型列表地址 <i>可选</i></span><input value={api.modelsEndpoint} onChange={(event) => setApi((current) => ({ ...current, modelsEndpoint: event.target.value }))} placeholder="留空时根据 API Endpoint 自动推导 /models" /><small className="field-helper">只有站点使用特殊路径时才需要填写；一般留空即可。</small></label>
                 <label className="field field-wide"><span className="field-label">API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={api.apiKey} onChange={(event) => setApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>
                 <label className="field field-wide range-field"><span className="field-label">创造性 <b>{api.temperature.toFixed(1)}</b></span><input type="range" min="0" max="1.5" step="0.1" value={api.temperature} onChange={(event) => setApi((current) => ({ ...current, temperature: Number(event.target.value) }))} /></label>
               </div>
               <div className="api-notice"><span>i</span><p><b>安全提示</b>请只在自己的设备上保存密钥。使用共享设备时，完成后点击“清除密钥”。</p></div>
               <div className="inline-actions api-actions">
+                {api.provider === "custom" && <button className="secondary-button" onClick={saveCurrentApi}>{api.id ? "更新此站点" : "保存此站点"}</button>}
                 <button className="primary-button compact" onClick={testApi} disabled={busy !== null}>{busy === "test" ? "测试中…" : "测试连接"}<span>→</span></button>
-                <button className="text-button danger" onClick={() => { setApi((current) => ({ ...current, apiKey: "" })); setNotice("API Key 已从本机清除"); }}>清除密钥</button>
+                <button className="text-button danger" onClick={clearCurrentApiKey}>清除密钥</button>
               </div>
             </section>
 
             <section className="api-help">
-              <div><span>01</span><b>选择服务商</b><p>使用官方预设，或连接兼容 OpenAI Chat Completions 的接口。</p></div>
-              <div><span>02</span><b>保存到本机</b><p>输入后自动保存在这个浏览器，下次打开无需重新填写。</p></div>
-              <div><span>03</span><b>回到角色卡</b><p>同一套预设可用于角色提取和世界书生成。</p></div>
+              <div><span>01</span><b>添加 API 站点</b><p>选择“兼容接口”，填写站点的 /v1 地址和 API Key。</p></div>
+              <div><span>02</span><b>拉取并选择模型</b><p>点击“拉取模型”，也可在站点不支持列表接口时手动输入模型 ID。</p></div>
+              <div><span>03</span><b>保存多个预设</b><p>保存后可在不同 API 站点之间切换，用于角色卡和世界书生成。</p></div>
             </section>
           </div>
         )}
