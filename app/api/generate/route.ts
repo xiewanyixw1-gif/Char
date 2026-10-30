@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
+type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 
 type GenerateRequest = {
-  mode?: "character" | "world" | "test";
+  mode?: "character-create" | "character-extract" | "world" | "revise" | "test";
+  section?: RevisionSection;
   prompt?: string;
   preset?: {
     provider?: Provider;
@@ -14,11 +16,35 @@ type GenerateRequest = {
   };
 };
 
-const CHARACTER_SYSTEM = `你是专业的 AI 角色设定整理师。完整阅读资料，忠实提取设定，不擅自改写身份、经历、关系或世界观。原文未明确的信息使用空字符串；冲突设定写入 conflicts，不自行裁决。保留人物复杂性、缺点、隐藏动机、语言风格和情绪变化。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是 1 至 3 条字符串数组。persona 以第三人称整理身份、背景、性格、心理、欲望、恐惧、行为逻辑、说话方式、关系和互动模式。biography 按人生轨迹叙述。appearance 只写可视觉化信息。`;
+const CHARACTER_EXTRACT_SYSTEM = `你是专业的 AI 角色设定整理师。完整阅读资料，忠实提取设定，不擅自改写身份、经历、关系或世界观。原文未明确的信息使用空字符串；冲突设定写入 conflicts，不自行裁决。保留人物复杂性、缺点、隐藏动机、语言风格和情绪变化。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是 1 至 3 条字符串数组。persona 以第三人称整理身份、背景、性格、心理、欲望、恐惧、行为逻辑、说话方式、关系和互动模式。biography 按人生轨迹叙述。appearance 只写可视觉化信息。`;
+
+const CHARACTER_CREATE_SYSTEM = `你是专业的 AI 角色设定创作师。用户会提供想要的人设方向与世界背景，请在严格遵守这些要求的前提下，直接创作一张完整、可长期稳定扮演的角色卡。合理补齐姓名、经历、关系、行为逻辑、语言习惯和视觉细节，使各模块互相一致；不要加入违背用户要求的身份、性格或关系。避免空泛标签、完美化人物和套路化表达，让角色有缺点、矛盾、欲望、恐惧与清晰边界。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是 1 至 3 条可直接开聊的字符串数组，不替用户决定言行。persona 以第三人称写身份、背景、性格、心理、目标、弱点、行为逻辑、说话方式、关系与互动模式。biography 按时间线叙述。appearance 只写可视觉化内容。conflicts 用于记录需要用户确认的创作选择，没有则为空字符串。`;
 
 const WORLD_SYSTEM = `你是世界观资料编辑。将输入拆成独立、清晰、可按关键词触发的世界书条目。覆盖必要的时代、地理、地点、国家、组织、制度、历史事件、人物关系、力量体系与特殊规则；不要把无关内容堆在一个条目里，不要编造输入中不存在的事实。只返回合法 JSON 数组，不要 Markdown、解释或代码围栏。每项包含 title, keys, content, category, priority, enabled。keys 是用中文逗号分隔的触发词字符串；category 只能是世界观、地点、组织、人物关系、历史事件、规则、力量体系之一；priority 为 1 到 100 的整数；enabled 为 true。`;
 
 const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行简短回复。";
+
+function revisionSystem(section?: RevisionSection) {
+  const shared = "你正在根据用户的修改建议优化已经生成的角色卡。必须保留用户没有要求改变的核心设定，不要解释修改过程，不要输出前言、Markdown 或代码围栏。";
+  switch (section) {
+    case "basic":
+      return `${shared} 只返回合法 JSON 对象，包含 name, gender, note, nickname, signature, age, suffix, language 八个字符串字段。`;
+    case "greetings":
+      return `${shared} 只返回合法 JSON 字符串数组，包含 1 至 3 条完整开场白；保持角色语气，不替用户决定行为、心理或台词。`;
+    case "world":
+      return `${shared} 只返回合法 JSON 数组。每项包含 title, keys, content, category, priority, enabled；保留仍适用的条目，并按建议增删或改写。`;
+    case "persona":
+      return `${shared} 只返回优化后的完整人设正文，保持第三人称，覆盖身份、心理、语言、关系和行为逻辑。`;
+    case "biography":
+      return `${shared} 只返回优化后的完整人物小传，按合理时间线叙述。`;
+    case "appearance":
+      return `${shared} 只返回优化后的完整生图外貌，只包含可以视觉呈现的特征。`;
+    case "conflicts":
+      return `${shared} 只返回优化后的“缺失信息与设定冲突”正文；不得擅自替用户裁决仍未确定的冲突。`;
+    default:
+      return `${shared} 只返回优化后的完整正文。`;
+  }
+}
 
 function blockedHost(hostname: string) {
   const host = hostname.toLowerCase();
@@ -50,6 +76,7 @@ export async function POST(request: Request) {
   }
 
   const mode = body.mode ?? "character";
+  const section = body.section;
   const prompt = body.prompt?.trim() ?? "";
   const provider = body.preset?.provider ?? "openai";
   const endpoint = body.preset?.endpoint?.trim() ?? "";
@@ -69,7 +96,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "接口地址必须是可公开访问的 HTTPS 地址" }, { status: 400 });
   }
 
-  const system = mode === "world" ? WORLD_SYSTEM : mode === "test" ? TEST_SYSTEM : CHARACTER_SYSTEM;
+  const system = mode === "world"
+    ? WORLD_SYSTEM
+    : mode === "test"
+      ? TEST_SYSTEM
+      : mode === "revise"
+        ? revisionSystem(section)
+        : mode === "character-create"
+          ? CHARACTER_CREATE_SYSTEM
+          : CHARACTER_EXTRACT_SYSTEM;
+  const textRevision = mode === "revise" && ["persona", "biography", "appearance", "conflicts"].includes(section ?? "");
+  const expectsJson = mode !== "test" && !textRevision;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90000);
 
@@ -93,7 +130,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature, responseMimeType: mode === "test" ? "text/plain" : "application/json" },
+          generationConfig: { temperature, responseMimeType: expectsJson ? "application/json" : "text/plain" },
         }),
         signal: controller.signal,
       });

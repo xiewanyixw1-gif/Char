@@ -5,6 +5,9 @@ import { ChangeEvent, useEffect, useMemo, useState } from "react";
 type View = "character" | "world" | "api";
 type Tone = "mist" | "warm" | "paper";
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
+type GenerationMode = "create" | "extract";
+type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
+type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "test";
 
 type CharacterDraft = {
   name: string;
@@ -178,13 +181,61 @@ function TextAreaField({
   );
 }
 
+function RevisionPanel({
+  section,
+  value,
+  onChange,
+  onSubmit,
+  loading,
+  example,
+}: {
+  section: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  loading: boolean;
+  example: string;
+}) {
+  return (
+    <div className="revision-panel">
+      <div className="revision-copy">
+        <span>AI REFINE</span>
+        <b>对{section}提出修改建议</b>
+      </div>
+      <input
+        aria-label={`${section}修改建议`}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && value.trim() && !loading) onSubmit();
+        }}
+        placeholder={example}
+      />
+      <button onClick={onSubmit} disabled={loading || !value.trim()}>
+        {loading ? "正在优化…" : "AI 重新优化"}<span>↗</span>
+      </button>
+    </div>
+  );
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("character");
   const [tone, setTone] = useState<Tone>("mist");
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("create");
   const [draft, setDraft] = useState<CharacterDraft>(EMPTY_DRAFT);
   const [entries, setEntries] = useState<WorldEntry[]>([]);
   const [api, setApi] = useState<ApiPreset>(DEFAULT_API);
   const [busy, setBusy] = useState<"character" | "world" | "test" | null>(null);
+  const [revising, setRevising] = useState<RevisionSection | null>(null);
+  const [revisionNotes, setRevisionNotes] = useState<Record<RevisionSection, string>>({
+    basic: "",
+    persona: "",
+    greetings: "",
+    biography: "",
+    appearance: "",
+    world: "",
+    conflicts: "",
+  });
   const [notice, setNotice] = useState("草稿仅保存在此设备");
   const [ready, setReady] = useState(false);
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
@@ -195,10 +246,12 @@ export default function Home() {
       const storedEntries = localStorage.getItem("mori-world-entries");
       const storedApi = localStorage.getItem("mori-api-preset");
       const storedTone = localStorage.getItem("mori-tone") as Tone | null;
+      const storedMode = localStorage.getItem("mori-generation-mode") as GenerationMode | null;
       if (storedDraft) setDraft({ ...EMPTY_DRAFT, ...JSON.parse(storedDraft) });
       if (storedEntries) setEntries(JSON.parse(storedEntries));
       if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
+      if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
     } catch {
       setNotice("本地草稿读取失败，已为你新建空白卡片");
     } finally {
@@ -220,7 +273,8 @@ export default function Home() {
     localStorage.setItem("mori-world-entries", JSON.stringify(entries));
     localStorage.setItem("mori-api-preset", JSON.stringify(api));
     localStorage.setItem("mori-tone", tone);
-  }, [api, draft, entries, ready, tone]);
+    localStorage.setItem("mori-generation-mode", generationMode);
+  }, [api, draft, entries, generationMode, ready, tone]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
@@ -237,7 +291,7 @@ export default function Home() {
     setNotice(`已切换到 ${selected.name} 预设`);
   };
 
-  const callModel = async (mode: "character" | "world" | "test", prompt: string) => {
+  const callModel = async (mode: ModelMode, prompt: string, section?: RevisionSection) => {
     if (!api.apiKey.trim()) {
       setView("api");
       throw new Error("请先填写 API Key");
@@ -245,7 +299,7 @@ export default function Home() {
     const response = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode, prompt, preset: api }),
+      body: JSON.stringify({ mode, prompt, section, preset: api }),
     });
     const payload = (await response.json()) as { text?: string; error?: string };
     if (!response.ok) throw new Error(payload.error || "生成失败，请检查 API 配置");
@@ -254,15 +308,17 @@ export default function Home() {
 
   const generateCharacter = async () => {
     if (!draft.source.trim()) {
-      setNotice("请先粘贴小说、设定或聊天记录");
+      setNotice(generationMode === "create" ? "请先描述你想要的人设" : "请先粘贴小说、设定或聊天记录");
       return;
     }
     setBusy("character");
-    setNotice("正在提取角色设定…");
+    setNotice(generationMode === "create" ? "正在按照你的想法创作完整角色卡…" : "正在提取角色设定…");
     try {
       const text = await callModel(
-        "character",
-        `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`,
+        generationMode === "create" ? "character-create" : "character-extract",
+        generationMode === "create"
+          ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}`
+          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`,
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[] };
       setDraft((current) => ({
@@ -272,11 +328,94 @@ export default function Home() {
         background: current.background,
         greetings: Array.isArray(parsed.greetings) && parsed.greetings.length ? parsed.greetings.slice(0, 3) : current.greetings,
       }));
-      setNotice("角色卡已生成，请逐项确认后导出");
+      setNotice("角色卡已生成；每个部分都可以填写建议并让 AI 单独优化");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "生成失败");
     } finally {
       setBusy(null);
+    }
+  };
+
+  const updateRevisionNote = (section: RevisionSection, value: string) => {
+    setRevisionNotes((current) => ({ ...current, [section]: value }));
+  };
+
+  const normalizeWorldEntries = (items: Array<Partial<WorldEntry>>) => items.slice(0, 24).map((entry, index) => ({
+    id: uid(),
+    title: entry.title || `条目 ${index + 1}`,
+    keys: entry.keys || "",
+    content: entry.content || "",
+    category: entry.category || "世界观",
+    priority: Number(entry.priority) || 100 - index,
+    enabled: entry.enabled !== false,
+  }));
+
+  const optimizeSection = async (section: RevisionSection) => {
+    const suggestion = revisionNotes[section].trim();
+    if (!suggestion) return;
+
+    const currentContent: Record<RevisionSection, unknown> = {
+      basic: {
+        name: draft.name,
+        gender: draft.gender,
+        note: draft.note,
+        nickname: draft.nickname,
+        signature: draft.signature,
+        age: draft.age,
+        suffix: draft.suffix,
+        language: draft.language,
+      },
+      persona: draft.persona,
+      greetings: draft.greetings,
+      biography: draft.biography,
+      appearance: draft.appearance,
+      world: entries,
+      conflicts: draft.conflicts,
+    };
+
+    setRevising(section);
+    setNotice(`正在根据建议重新优化${section === "world" ? "世界书" : "这一部分"}…`);
+    try {
+      const text = await callModel(
+        "revise",
+        `【角色与世界背景】\n${draft.source || "未提供"}\n${draft.background || ""}\n\n【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前内容】\n${JSON.stringify(currentContent[section], null, 2)}\n\n【用户修改建议】\n${suggestion}`,
+        section,
+      );
+
+      if (section === "basic") {
+        const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft>;
+        const basicKeys: Array<keyof CharacterDraft> = ["name", "gender", "note", "nickname", "signature", "age", "suffix", "language"];
+        setDraft((current) => {
+          const next = { ...current };
+          basicKeys.forEach((key) => {
+            if (typeof parsed[key] === "string") (next[key] as string) = parsed[key] as string;
+          });
+          return next;
+        });
+      } else if (section === "greetings") {
+        const parsed = JSON.parse(cleanJsonText(text));
+        if (!Array.isArray(parsed)) throw new Error("开场白格式不正确，请重试");
+        updateDraft("greetings", parsed.filter((item): item is string => typeof item === "string").slice(0, 3));
+      } else if (section === "world") {
+        const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
+        if (!Array.isArray(parsed)) throw new Error("世界书格式不正确，请重试");
+        setEntries(normalizeWorldEntries(parsed));
+      } else {
+        const fieldMap: Record<Exclude<RevisionSection, "basic" | "greetings" | "world">, keyof CharacterDraft> = {
+          persona: "persona",
+          biography: "biography",
+          appearance: "appearance",
+          conflicts: "conflicts",
+        };
+        updateDraft(fieldMap[section], text.trim());
+      }
+
+      updateRevisionNote(section, "");
+      setNotice("已按你的建议完成优化；其他部分保持不变");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "优化失败，请稍后重试");
+    } finally {
+      setRevising(null);
     }
   };
 
@@ -294,17 +433,7 @@ export default function Home() {
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
       if (!Array.isArray(parsed)) throw new Error("模型返回的世界书格式不正确");
-      setEntries(
-        parsed.slice(0, 24).map((entry, index) => ({
-          id: uid(),
-          title: entry.title || `条目 ${index + 1}`,
-          keys: entry.keys || "",
-          content: entry.content || "",
-          category: entry.category || "世界观",
-          priority: Number(entry.priority) || 100 - index,
-          enabled: entry.enabled !== false,
-        })),
-      );
+      setEntries(normalizeWorldEntries(parsed));
       setView("world");
       setNotice("世界书已生成，可继续编辑与导出");
     } catch (error) {
@@ -455,11 +584,11 @@ export default function Home() {
             <section className="hero">
               <div className="hero-copy">
                 <span className="eyebrow">CHARACTER ARCHIVE · 角色档案</span>
-                <h1>把散乱资料，整理成<br /><em>可长期扮演</em>的角色。</h1>
-                <p>粘贴小说、设定或聊天记录，自动拆分 LiToT 必填字段，同时保留人物的矛盾、语气与经历。</p>
+                <h1>把你的想法，直接变成<br /><em>可长期扮演</em>的角色。</h1>
+                <p>描述想要的人设与故事背景，AI 会按照角色卡模板一次生成完整内容；不满意的部分可以单独提出建议、重新优化。</p>
                 <div className="hero-actions">
                   <button className="primary-button" onClick={generateCharacter} disabled={busy !== null}>
-                    {busy === "character" ? "正在生成…" : "生成完整角色卡"}<span>→</span>
+                    {busy === "character" ? "正在生成…" : generationMode === "create" ? "按我的想法生成" : "提取完整角色卡"}<span>→</span>
                   </button>
                   <label className="file-button">
                     导入资料
@@ -480,17 +609,20 @@ export default function Home() {
 
             <section className="editor-card source-card">
               <div className="section-heading">
-                <div><span>STEP 01</span><h2>原始资料与世界背景</h2></div>
-                <small>支持 TXT / MD / JSON，最多读取 120,000 字符</small>
+                <div><span>STEP 01</span><h2>{generationMode === "create" ? "告诉 AI 你想要的角色" : "原始资料与世界背景"}</h2></div>
+                <div className="mode-switch" aria-label="角色生成模式">
+                  <button className={generationMode === "create" ? "active" : ""} onClick={() => setGenerationMode("create")}>从想法创作</button>
+                  <button className={generationMode === "extract" ? "active" : ""} onClick={() => setGenerationMode("extract")}>从资料提取</button>
+                </div>
               </div>
               <div className="dual-textareas">
                 <TextAreaField
-                  label="角色原始资料"
+                  label={generationMode === "create" ? "我想要的人设" : "角色原始资料"}
                   value={draft.source}
                   onChange={(value) => updateDraft("source", value)}
                   rows={10}
-                  placeholder="粘贴小说片段、旧角色卡、人物设定、聊天记录……"
-                  helper="系统会忠于原文提取，不把推测写成事实。"
+                  placeholder={generationMode === "create" ? "例如：28 岁的财阀继承人，表面冷淡克制，私下很会照顾人；说话简短、不油腻，与用户是多年未见的旧识……" : "粘贴小说片段、旧角色卡、人物设定、聊天记录……"}
+                  helper={generationMode === "create" ? "可以只写关键词，也可以详细描述性格、关系、语气、禁忌和互动偏好。" : "系统会忠于原文提取，不把推测写成事实。"}
                 />
                 <TextAreaField
                   label="世界背景 / 想要的故事背景"
@@ -502,7 +634,7 @@ export default function Home() {
                 />
               </div>
               <div className="inline-actions">
-                <button className="secondary-button" onClick={generateCharacter} disabled={busy !== null}>提取角色信息</button>
+                <button className="secondary-button" onClick={generateCharacter} disabled={busy !== null}>{generationMode === "create" ? "直接生成完整角色卡" : "提取角色信息"}</button>
                 <button className="text-button" onClick={generateWorld} disabled={busy !== null}>根据背景生成世界书 →</button>
               </div>
             </section>
@@ -522,6 +654,14 @@ export default function Home() {
                 <Field label="被拍后缀" value={draft.suffix} onChange={(value) => updateDraft("suffix", value)} placeholder="如：同学 / 先生 / 前辈" />
                 <Field label="文化母语" value={draft.language} onChange={(value) => updateDraft("language", value)} placeholder="中文 / 韩语 / 日语" required />
               </div>
+              <RevisionPanel
+                section="基础信息"
+                value={revisionNotes.basic}
+                onChange={(value) => updateRevisionNote("basic", value)}
+                onSubmit={() => optimizeSection("basic")}
+                loading={revising === "basic"}
+                example="例如：改成韩文名字，年龄调整为 31 岁，签名更克制"
+              />
             </section>
 
             <section className="editor-card">
@@ -535,6 +675,14 @@ export default function Home() {
                 onChange={(value) => updateDraft("persona", value)}
                 rows={13}
                 placeholder="AI 长期扮演角色时使用的核心设定……"
+              />
+              <RevisionPanel
+                section="人设正文"
+                value={revisionNotes.persona}
+                onChange={(value) => updateRevisionNote("persona", value)}
+                onSubmit={() => optimizeSection("persona")}
+                loading={revising === "persona"}
+                example="例如：减少霸总感，增加生活化缺点；对用户更慢热"
               />
             </section>
 
@@ -568,22 +716,54 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              <RevisionPanel
+                section="开场白"
+                value={revisionNotes.greetings}
+                onChange={(value) => updateRevisionNote("greetings", value)}
+                onSubmit={() => optimizeSection("greetings")}
+                loading={revising === "greetings"}
+                example="例如：第一条改成雨夜重逢；对白更自然，不要替用户行动"
+              />
             </section>
 
             <div className="split-editor">
               <section className="editor-card">
                 <div className="section-heading"><div><span>STEP 05</span><h2>人物小传</h2></div></div>
                 <TextAreaField label="人物经历" value={draft.biography} onChange={(value) => updateDraft("biography", value)} rows={12} placeholder="按时间线整理出身、转折、关系变化与当前状态……" />
+                <RevisionPanel
+                  section="人物小传"
+                  value={revisionNotes.biography}
+                  onChange={(value) => updateRevisionNote("biography", value)}
+                  onSubmit={() => optimizeSection("biography")}
+                  loading={revising === "biography"}
+                  example="例如：补充留学经历，但不要改变家庭关系"
+                />
               </section>
               <section className="editor-card">
                 <div className="section-heading"><div><span>STEP 06</span><h2>生图外貌</h2></div></div>
                 <TextAreaField label="可视觉化设定" value={draft.appearance} onChange={(value) => updateDraft("appearance", value)} rows={12} placeholder="外观年龄、体型、五官、发型、服饰、辨识特征与神态……" />
+                <RevisionPanel
+                  section="生图外貌"
+                  value={revisionNotes.appearance}
+                  onChange={(value) => updateRevisionNote("appearance", value)}
+                  onSubmit={() => optimizeSection("appearance")}
+                  loading={revising === "appearance"}
+                  example="例如：改成黑色微卷短发，穿搭更偏极简韩系"
+                />
               </section>
             </div>
 
             <section className="editor-card">
               <div className="section-heading"><div><span>STEP 07</span><h2>缺失信息与设定冲突</h2></div><small>不会擅自替你决定冲突版本</small></div>
               <TextAreaField label="待确认事项" value={draft.conflicts} onChange={(value) => updateDraft("conflicts", value)} rows={5} placeholder="原文未提供的信息，以及互相矛盾的设定会列在这里……" />
+              <RevisionPanel
+                section="冲突与缺失信息"
+                value={revisionNotes.conflicts}
+                onChange={(value) => updateRevisionNote("conflicts", value)}
+                onSubmit={() => optimizeSection("conflicts")}
+                loading={revising === "conflicts"}
+                example="例如：把已经确认的年龄从冲突项中删除，其余保留"
+              />
               <div className="export-row">
                 <div><b>完成后导出</b><span>可再次导入此工作台，也可复制到其他角色平台。</span></div>
                 <button className="quiet-button" onClick={() => exportCharacter("txt")}>下载 TXT</button>
@@ -605,6 +785,14 @@ export default function Home() {
 
             <section className="editor-card world-source">
               <TextAreaField label="世界背景" value={draft.background} onChange={(value) => updateDraft("background", value)} rows={7} placeholder="描述时代、地理、组织、制度、力量体系、历史事件和特殊规则……" />
+              <RevisionPanel
+                section="世界书"
+                value={revisionNotes.world}
+                onChange={(value) => updateRevisionNote("world", value)}
+                onSubmit={() => optimizeSection("world")}
+                loading={revising === "world"}
+                example="例如：合并重复地点，增加财阀组织条目，关键词用常见简称"
+              />
             </section>
 
             <div className="world-toolbar">
