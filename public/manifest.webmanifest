@@ -1,0 +1,17 @@
+{
+  "name": "MORI 角色工作室",
+  "short_name": "MORI",
+  "description": "AI 角色卡整理、世界书生成与多 API 预设连接。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f2f3f2",
+  "theme_color": "#f2f3f2",
+  "lang": "zh-CN",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
