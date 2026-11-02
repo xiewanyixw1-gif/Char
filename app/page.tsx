@@ -56,6 +56,7 @@ type ApiPreset = {
   endpoint: string;
   modelsEndpoint: string;
   model: string;
+  models: string[];
   apiKey: string;
   temperature: number;
 };
@@ -116,6 +117,7 @@ const DEFAULT_API: ApiPreset = {
   endpoint: "https://api.openai.com/v1/chat/completions",
   modelsEndpoint: "https://api.openai.com/v1/models",
   model: "gpt-4.1-mini",
+  models: [],
   apiKey: "",
   temperature: 0.7,
 };
@@ -132,7 +134,7 @@ const DEFAULT_LIBRARY: LibraryEntry[] = [
 
 const LIBRARY_CATEGORIES: LibraryCategory[] = ["变量规范", "人设要求", "世界书参考", "互动规则", "文风要求", "禁用项"];
 
-const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature"> & { docs: string; hint: string }> = {
+const PROVIDERS: Record<Provider, Omit<ApiPreset, "apiKey" | "temperature" | "models"> & { docs: string; hint: string }> = {
   openai: {
     provider: "openai",
     name: "OpenAI",
@@ -390,8 +392,16 @@ export default function Home() {
       setActiveWorldBookId(restoredActiveBook.id);
       setEntries(cloneEntries(restoredActiveBook.entries));
       if (storedLibrary !== null) setLibrary(JSON.parse(storedLibrary));
-      if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
-      if (storedSavedApis) setSavedApis(JSON.parse(storedSavedApis));
+      if (storedApi) {
+        const restoredApi = { ...DEFAULT_API, ...JSON.parse(storedApi) } as ApiPreset;
+        restoredApi.models = Array.isArray(restoredApi.models) ? restoredApi.models : [];
+        setApi(restoredApi);
+        setModelOptions(restoredApi.models);
+      }
+      if (storedSavedApis) {
+        const restoredApis = JSON.parse(storedSavedApis) as ApiPreset[];
+        setSavedApis(Array.isArray(restoredApis) ? restoredApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [] })) : []);
+      }
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
       if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
       if (storedBackgroundImage) setBackgroundImage(storedBackgroundImage);
@@ -445,6 +455,11 @@ export default function Home() {
       setNotice("设置保存失败，请检查浏览器存储空间");
     }
   }, [api, backgroundImage, generationMode, library, ready, savedApis, tone]);
+
+  useEffect(() => {
+    if (!ready || !api.id) return;
+    setSavedApis((current) => current.map((item) => item.id === api.id ? { ...api, models: [...modelOptions] } : item));
+  }, [api, modelOptions, ready]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
@@ -670,8 +685,12 @@ export default function Home() {
       setActiveWorldBookId(activeBook.id);
       setEntries(cloneEntries(activeBook.entries));
       if (Array.isArray(payload.library)) setLibrary(payload.library);
-      if (payload.api) setApi({ ...DEFAULT_API, ...payload.api, apiKey: "" });
-      if (Array.isArray(payload.savedApis)) setSavedApis(payload.savedApis.map((item) => ({ ...item, apiKey: "" })));
+      if (payload.api) {
+        const restoredApi = { ...DEFAULT_API, ...payload.api, models: Array.isArray(payload.api.models) ? payload.api.models : [], apiKey: "" };
+        setApi(restoredApi);
+        setModelOptions(restoredApi.models);
+      }
+      if (Array.isArray(payload.savedApis)) setSavedApis(payload.savedApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [], apiKey: "" })));
       if (payload.tone) setTone(payload.tone);
       if (payload.generationMode) setGenerationMode(payload.generationMode);
       setUndoStack([]);
@@ -689,18 +708,25 @@ export default function Home() {
 
   const chooseProvider = (provider: Provider) => {
     const selected = PROVIDERS[provider];
-    setApi((current) => ({ ...current, ...selected, id: undefined, provider, apiKey: current.provider === provider ? current.apiKey : "" }));
+    setApi((current) => ({ ...current, ...selected, id: undefined, provider, models: [], apiKey: current.provider === provider ? current.apiKey : "" }));
     setModelOptions([]);
     setNotice(`已切换到 ${selected.name} 预设`);
   };
 
   const chooseSavedApi = (preset: ApiPreset) => {
-    setApi({ ...DEFAULT_API, ...preset, provider: "custom" });
-    setModelOptions([]);
-    setNotice(`已载入 ${preset.name}`);
+    const restored = { ...DEFAULT_API, ...preset, provider: "custom" as const, models: Array.isArray(preset.models) ? preset.models : [] };
+    setApi(restored);
+    setModelOptions(restored.models);
+    setNotice(`已切换到站点预设“${preset.name}”`);
   };
 
-  const saveCurrentApi = () => {
+  const startNewApiPreset = () => {
+    setApi({ ...DEFAULT_API, ...PROVIDERS.custom, id: undefined, provider: "custom", name: `自定义站点 ${savedApis.length + 1}`, models: [], apiKey: "", temperature: api.temperature });
+    setModelOptions([]);
+    setNotice("已新建空白站点预设，请填写连接信息后保存");
+  };
+
+  const saveCurrentApi = (saveAsNew = false) => {
     if (api.provider !== "custom") {
       setNotice("官方预设会自动保留；需要新增站点时请选择“兼容接口”");
       return;
@@ -709,19 +735,25 @@ export default function Home() {
       setNotice("请填写预设名称和 API Endpoint");
       return;
     }
-    const saved = { ...api, id: api.id ?? uid(), provider: "custom" as const };
+    const saved = {
+      ...api,
+      id: saveAsNew || !api.id ? uid() : api.id,
+      name: saveAsNew ? `${api.name} 副本` : api.name,
+      provider: "custom" as const,
+      models: [...modelOptions],
+    };
     setSavedApis((current) => {
       const exists = current.some((item) => item.id === saved.id);
       return exists ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved];
     });
     setApi(saved);
-    setNotice(`已在本机保存站点“${saved.name}”`);
+    setNotice(`已保存并启用站点预设“${saved.name}”`);
   };
 
   const removeSavedApi = (id: string) => {
     setSavedApis((current) => current.filter((item) => item.id !== id));
     if (api.id === id) {
-      setApi({ ...DEFAULT_API, ...PROVIDERS.custom, id: undefined, apiKey: "", temperature: api.temperature });
+      setApi({ ...DEFAULT_API, ...PROVIDERS.custom, id: undefined, models: [], apiKey: "", temperature: api.temperature });
       setModelOptions([]);
     }
     setNotice("已删除该自定义站点");
@@ -753,9 +785,11 @@ export default function Home() {
       if (!response.ok) throw new Error(payload.error || "模型列表拉取失败");
       const models = payload.models ?? [];
       setModelOptions(models);
-      if (models.length && (!api.model.trim() || api.model === "your-model-name")) {
-        setApi((current) => ({ ...current, model: models[0] }));
-      }
+      setApi((current) => ({
+        ...current,
+        models,
+        model: models.length && (!current.model.trim() || current.model === "your-model-name") ? models[0] : current.model,
+      }));
       setNotice(`已拉取 ${models.length} 个模型，可从模型名称的下拉建议中选择`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "模型列表拉取失败");
@@ -1733,22 +1767,44 @@ export default function Home() {
               ))}
             </section>
 
-            {savedApis.length > 0 && (
-              <section className="saved-api-section" aria-label="已保存的自定义 API 站点">
-                <div className="saved-api-heading"><div><span>SAVED SITES</span><h2>我的兼容站点</h2></div><small>仅保存在当前浏览器</small></div>
+            <section className="api-preset-switcher" aria-label="切换已保存的 API 预设">
+              <div>
+                <span>当前使用的 API 预设</span>
+                <b>{api.name || "未命名预设"}</b>
+                <small>{endpointHost(api.endpoint)} · {api.model || "未选模型"}</small>
+              </div>
+              <label>
+                <span>快速切换</span>
+                <select
+                  value={api.id ?? ""}
+                  onChange={(event) => {
+                    const selected = savedApis.find((preset) => preset.id === event.target.value);
+                    if (selected) chooseSavedApi(selected);
+                  }}
+                >
+                  <option value="">选择已保存的站点预设</option>
+                  {savedApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model || "未选模型"}</option>)}
+                </select>
+              </label>
+              <button onClick={startNewApiPreset}>＋ 新建站点预设</button>
+            </section>
+
+            <section className="saved-api-section" aria-label="已保存的自定义 API 站点">
+                <div className="saved-api-heading"><div><span>SAVED SITES</span><h2>我的站点预设</h2></div><small>{savedApis.length} 个预设 · 仅保存在当前浏览器</small></div>
+                {savedApis.length > 0 ? (
                 <div className="saved-api-grid">
                   {savedApis.map((preset) => (
                     <article key={preset.id} className={api.id === preset.id ? "active" : ""}>
                       <button className="saved-api-select" onClick={() => chooseSavedApi(preset)}>
                         <span className="provider-mark">{preset.name.trim().slice(0, 1) || "＋"}</span>
-                        <span><b>{preset.name}</b><small>{endpointHost(preset.endpoint)} · {preset.model || "未选模型"}</small></span>
+                        <span><b>{preset.name}{api.id === preset.id ? " · 使用中" : ""}</b><small>{endpointHost(preset.endpoint)} · {preset.model || "未选模型"} · {preset.models?.length ?? 0} 个已拉取模型</small></span>
                       </button>
                       <button className="saved-api-delete" onClick={() => preset.id && removeSavedApi(preset.id)} aria-label={`删除 ${preset.name}`}>×</button>
                     </article>
                   ))}
                 </div>
+                ) : <div className="saved-api-empty"><b>还没有自定义站点</b><span>点击“新建站点预设”，填写地址和密钥后保存。</span></div>}
               </section>
-            )}
 
             <section className="editor-card api-form">
               <div className="section-heading"><div><span>ACTIVE PRESET</span><h2>{api.name}</h2></div><a href={PROVIDERS[api.provider].docs} target="_blank" rel="noreferrer">查看官方文档 ↗</a></div>
@@ -1774,14 +1830,15 @@ export default function Home() {
                   </div>
                   <small className="field-helper">{modelOptions.length > 0 ? `列表中共有 ${modelOptions.length} 个模型；下拉选择或手动输入均可。` : "拉取模型后会显示完整下拉列表，也可以直接手动填写。"}</small>
                 </label>
-                <label className="field field-wide"><span className="field-label">API Endpoint <i>必填</i></span><input value={api.endpoint} onChange={(event) => { setApi((current) => ({ ...current, endpoint: event.target.value })); setModelOptions([]); }} placeholder="https://站点地址/v1 或完整的 /chat/completions 地址" /><small className="field-helper">兼容接口可填写站点的 /v1 基础地址，生成时会自动使用 /chat/completions。</small></label>
+                <label className="field field-wide"><span className="field-label">API Endpoint <i>必填</i></span><input value={api.endpoint} onChange={(event) => { setApi((current) => ({ ...current, endpoint: event.target.value, models: [] })); setModelOptions([]); }} placeholder="https://站点地址/v1 或完整的 /chat/completions 地址" /><small className="field-helper">兼容接口可填写站点的 /v1 基础地址，生成时会自动使用 /chat/completions。</small></label>
                 <label className="field field-wide"><span className="field-label">模型列表地址 <i>可选</i></span><input value={api.modelsEndpoint} onChange={(event) => setApi((current) => ({ ...current, modelsEndpoint: event.target.value }))} placeholder="留空时根据 API Endpoint 自动推导 /models" /><small className="field-helper">只有站点使用特殊路径时才需要填写；一般留空即可。</small></label>
                 <label className="field field-wide"><span className="field-label">API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={api.apiKey} onChange={(event) => setApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>
                 <label className="field field-wide range-field"><span className="field-label">创造性 <b>{api.temperature.toFixed(1)}</b></span><input type="range" min="0" max="1.5" step="0.1" value={api.temperature} onChange={(event) => setApi((current) => ({ ...current, temperature: Number(event.target.value) }))} /></label>
               </div>
               <div className="api-notice"><span>i</span><p><b>安全提示</b>请只在自己的设备上保存密钥。使用共享设备时，完成后点击“清除密钥”。</p></div>
               <div className="inline-actions api-actions">
-                {api.provider === "custom" && <button className="secondary-button" onClick={saveCurrentApi}>{api.id ? "更新此站点" : "保存此站点"}</button>}
+                {api.provider === "custom" && <button className="secondary-button" onClick={() => saveCurrentApi(false)}>{api.id ? "保存当前修改" : "保存为新预设"}</button>}
+                {api.provider === "custom" && api.id && <button className="quiet-button" onClick={() => saveCurrentApi(true)}>另存为新预设</button>}
                 <button className="primary-button compact" onClick={testApi} disabled={busy !== null}>{busy === "test" ? "测试中…" : "测试连接"}<span>→</span></button>
                 <button className="text-button danger" onClick={clearCurrentApiKey}>清除密钥</button>
               </div>

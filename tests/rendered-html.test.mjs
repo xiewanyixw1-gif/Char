@@ -36,6 +36,14 @@ test("keeps multiple world books bound to each character", async () => {
   assert.match(source, /AI 再次生成时会另存一本/);
 });
 
+test("stores and switches independent API site presets", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /models: string\[\]/);
+  assert.match(source, /快速切换/);
+  assert.match(source, /另存为新预设/);
+  assert.match(source, /已切换到站点预设/);
+});
+
 test("ships installable app assets and removes the starter preview", async () => {
   const [manifest, serviceWorker] = await Promise.all([
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
