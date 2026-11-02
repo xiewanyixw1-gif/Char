@@ -1,13 +1,15 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect -- localStorage hydration and local-first snapshot synchronization intentionally update client state */
+
+import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useState } from "react";
 
 type View = "character" | "library" | "world" | "api";
 type Tone = "mist" | "warm" | "paper";
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
-type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "test";
+type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "check" | "test";
 
 type CharacterDraft = {
   name: string;
@@ -56,6 +58,38 @@ type ApiPreset = {
   model: string;
   apiKey: string;
   temperature: number;
+};
+
+type WorldBookRecord = {
+  id: string;
+  name: string;
+  entries: WorldEntry[];
+  updatedAt: string;
+};
+
+type CharacterRecord = {
+  id: string;
+  label: string;
+  draft: CharacterDraft;
+  entries: WorldEntry[];
+  worldBooks: WorldBookRecord[];
+  activeWorldBookId: string;
+  updatedAt: string;
+};
+
+type RevisionPreview = {
+  section: RevisionSection;
+  label: string;
+  before: string;
+  after: string;
+  value: unknown;
+  greetingIndex?: number;
+};
+
+type UndoSnapshot = {
+  label: string;
+  draft: CharacterDraft;
+  entries: WorldEntry[];
 };
 
 const EMPTY_DRAFT: CharacterDraft = {
@@ -146,6 +180,22 @@ const NAV_ITEMS: Array<{ id: View; label: string; note: string; mark: string }> 
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cloneDraft(draft: CharacterDraft): CharacterDraft {
+  return { ...draft, greetings: [...draft.greetings] };
+}
+
+function cloneEntries(entries: WorldEntry[]): WorldEntry[] {
+  return entries.map((entry) => ({ ...entry }));
+}
+
+function freshDraft(): CharacterDraft {
+  return cloneDraft(EMPTY_DRAFT);
+}
+
+function revisionText(value: unknown) {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function endpointHost(endpoint: string) {
@@ -262,13 +312,24 @@ export default function Home() {
   const [generationMode, setGenerationMode] = useState<GenerationMode>("create");
   const [draft, setDraft] = useState<CharacterDraft>(EMPTY_DRAFT);
   const [entries, setEntries] = useState<WorldEntry[]>([]);
+  const [characters, setCharacters] = useState<CharacterRecord[]>([]);
+  const [activeCharacterId, setActiveCharacterId] = useState("");
+  const [worldBooks, setWorldBooks] = useState<WorldBookRecord[]>([]);
+  const [activeWorldBookId, setActiveWorldBookId] = useState("");
   const [library, setLibrary] = useState<LibraryEntry[]>(DEFAULT_LIBRARY);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryCategory, setLibraryCategory] = useState<LibraryCategory | "全部">("全部");
   const [api, setApi] = useState<ApiPreset>(DEFAULT_API);
   const [savedApis, setSavedApis] = useState<ApiPreset[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [busy, setBusy] = useState<"character" | "world" | "test" | null>(null);
+  const [busy, setBusy] = useState<"character" | "world" | "check" | "test" | null>(null);
   const [revising, setRevising] = useState<RevisionSection | null>(null);
+  const [revisionPreview, setRevisionPreview] = useState<RevisionPreview | null>(null);
+  const [undoStack, setUndoStack] = useState<UndoSnapshot[]>([]);
+  const [consistencyIssues, setConsistencyIssues] = useState<string[] | null>(null);
+  const [greetingNotes, setGreetingNotes] = useState<Record<number, string>>({});
+  const [dragGreetingIndex, setDragGreetingIndex] = useState<number | null>(null);
   const [revisionNotes, setRevisionNotes] = useState<Record<RevisionSection, string>>({
     basic: "",
     persona: "",
@@ -279,29 +340,61 @@ export default function Home() {
     conflicts: "",
   });
   const [notice, setNotice] = useState("草稿仅保存在此设备");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [backgroundImage, setBackgroundImage] = useState("");
   const [ready, setReady] = useState(false);
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
 
   useEffect(() => {
     try {
-      const readStored = (key: string, legacyKey: string) => localStorage.getItem(key) ?? localStorage.getItem(legacyKey);
-      const storedDraft = readStored("char-character-draft", "mori-character-draft");
-      const storedEntries = readStored("char-world-entries", "mori-world-entries");
-      const storedLibrary = readStored("char-prompt-library", "mori-prompt-library");
-      const storedApi = readStored("char-api-preset", "mori-api-preset");
-      const storedSavedApis = readStored("char-custom-api-presets", "mori-custom-api-presets");
-      const storedTone = readStored("char-tone", "mori-tone") as Tone | null;
-      const storedMode = readStored("char-generation-mode", "mori-generation-mode") as GenerationMode | null;
-      if (storedDraft) {
-        const parsedDraft = JSON.parse(storedDraft) as Partial<CharacterDraft>;
-        setDraft({ ...EMPTY_DRAFT, ...parsedDraft, name: parsedDraft.name?.trim() || "char" });
+      const storedDraft = localStorage.getItem("char-character-draft");
+      const storedEntries = localStorage.getItem("char-world-entries");
+      const storedCharacters = localStorage.getItem("char-characters");
+      const storedActiveId = localStorage.getItem("char-active-character");
+      const storedLibrary = localStorage.getItem("char-prompt-library");
+      const storedApi = localStorage.getItem("char-api-preset");
+      const storedSavedApis = localStorage.getItem("char-custom-api-presets");
+      const storedTone = localStorage.getItem("char-tone") as Tone | null;
+      const storedMode = localStorage.getItem("char-generation-mode") as GenerationMode | null;
+      const storedBackgroundImage = localStorage.getItem("char-background-image");
+
+      let restoredCharacters = storedCharacters ? JSON.parse(storedCharacters) as CharacterRecord[] : [];
+      if (!Array.isArray(restoredCharacters) || !restoredCharacters.length) {
+        const parsedDraft = storedDraft ? JSON.parse(storedDraft) as Partial<CharacterDraft> : {};
+        const restoredDraft = { ...freshDraft(), ...parsedDraft, greetings: Array.isArray(parsedDraft.greetings) ? parsedDraft.greetings : [""], name: parsedDraft.name?.trim() || "char" };
+        const initialBook: WorldBookRecord = { id: uid(), name: `${restoredDraft.name || "char"}的世界书`, entries: storedEntries ? JSON.parse(storedEntries) : [], updatedAt: new Date().toISOString() };
+        restoredCharacters = [{
+          id: uid(),
+          label: restoredDraft.name || "char",
+          draft: restoredDraft,
+          entries: initialBook.entries,
+          worldBooks: [initialBook],
+          activeWorldBookId: initialBook.id,
+          updatedAt: new Date().toISOString(),
+        }];
       }
-      if (storedEntries) setEntries(JSON.parse(storedEntries));
+      restoredCharacters = restoredCharacters.map((item) => {
+        const existingEntries = Array.isArray(item.entries) ? item.entries : [];
+        const restoredBooks = Array.isArray(item.worldBooks) && item.worldBooks.length
+          ? item.worldBooks
+          : [{ id: uid(), name: `${item.draft?.name || item.label || "char"}的世界书`, entries: existingEntries, updatedAt: item.updatedAt || new Date().toISOString() }];
+        const activeBook = restoredBooks.find((book) => book.id === item.activeWorldBookId) ?? restoredBooks[0];
+        return { ...item, entries: activeBook.entries, worldBooks: restoredBooks, activeWorldBookId: activeBook.id };
+      });
+      const restoredActive = restoredCharacters.find((item) => item.id === storedActiveId) ?? restoredCharacters[0];
+      const restoredActiveBook = restoredActive.worldBooks.find((book) => book.id === restoredActive.activeWorldBookId) ?? restoredActive.worldBooks[0];
+      setCharacters(restoredCharacters);
+      setActiveCharacterId(restoredActive.id);
+      setDraft({ ...freshDraft(), ...restoredActive.draft, greetings: restoredActive.draft.greetings?.length ? restoredActive.draft.greetings : [""] });
+      setWorldBooks(restoredActive.worldBooks);
+      setActiveWorldBookId(restoredActiveBook.id);
+      setEntries(cloneEntries(restoredActiveBook.entries));
       if (storedLibrary !== null) setLibrary(JSON.parse(storedLibrary));
       if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
       if (storedSavedApis) setSavedApis(JSON.parse(storedSavedApis));
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
       if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
+      if (storedBackgroundImage) setBackgroundImage(storedBackgroundImage);
     } catch {
       setNotice("本地草稿读取失败，已为你新建空白卡片");
     } finally {
@@ -319,24 +412,60 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem("char-character-draft", JSON.stringify(draft));
-    localStorage.setItem("char-world-entries", JSON.stringify(entries));
-    localStorage.setItem("char-prompt-library", JSON.stringify(library));
-    localStorage.setItem("char-api-preset", JSON.stringify(api));
-    localStorage.setItem("char-custom-api-presets", JSON.stringify(savedApis));
-    localStorage.setItem("char-tone", tone);
-    localStorage.setItem("char-generation-mode", generationMode);
-  }, [api, draft, entries, generationMode, library, ready, savedApis, tone]);
+    try {
+      const savedAt = new Date();
+      const syncedBooks = worldBooks.map((book) => book.id === activeWorldBookId ? { ...book, entries: cloneEntries(entries), updatedAt: savedAt.toISOString() } : book);
+      setCharacters((current) => {
+        const next = current.map((item) => item.id === activeCharacterId
+          ? { ...item, label: draft.name.trim() || item.label || "char", draft: cloneDraft(draft), entries: cloneEntries(entries), worldBooks: syncedBooks, activeWorldBookId, updatedAt: savedAt.toISOString() }
+          : item);
+        localStorage.setItem("char-characters", JSON.stringify(next));
+        return next;
+      });
+      localStorage.setItem("char-active-character", activeCharacterId);
+      localStorage.setItem("char-character-draft", JSON.stringify(draft));
+      localStorage.setItem("char-world-entries", JSON.stringify(entries));
+      setLastSavedAt(savedAt);
+    } catch {
+      setNotice("角色草稿保存失败，请导出备份后检查浏览器存储空间");
+    }
+  }, [activeCharacterId, activeWorldBookId, draft, entries, ready, worldBooks]);
+
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      localStorage.setItem("char-prompt-library", JSON.stringify(library));
+      localStorage.setItem("char-api-preset", JSON.stringify(api));
+      localStorage.setItem("char-custom-api-presets", JSON.stringify(savedApis));
+      localStorage.setItem("char-tone", tone);
+      localStorage.setItem("char-generation-mode", generationMode);
+      if (backgroundImage) localStorage.setItem("char-background-image", backgroundImage);
+      else localStorage.removeItem("char-background-image");
+    } catch {
+      setNotice("设置保存失败，请检查浏览器存储空间");
+    }
+  }, [api, backgroundImage, generationMode, library, ready, savedApis, tone]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
   }, [draft]);
 
+  const activeWorldBook = useMemo(() => worldBooks.find((book) => book.id === activeWorldBookId) ?? worldBooks[0], [activeWorldBookId, worldBooks]);
+
   const enabledLibraryText = useMemo(() => library
     .filter((item) => item.enabled && item.content.trim())
     .map((item, index) => `【资料库 ${index + 1}｜${item.category}｜${item.title || "未命名"}】\n${item.content.trim()}`)
     .join("\n\n"), [library]);
+
+  const filteredLibrary = useMemo(() => {
+    const query = libraryQuery.trim().toLowerCase();
+    return library.filter((item) => {
+      const matchesCategory = libraryCategory === "全部" || item.category === libraryCategory;
+      const matchesQuery = !query || `${item.title}\n${item.content}`.toLowerCase().includes(query);
+      return matchesCategory && matchesQuery;
+    });
+  }, [library, libraryCategory, libraryQuery]);
 
   const updateDraft = <K extends keyof CharacterDraft>(key: K, value: CharacterDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -360,6 +489,198 @@ export default function Home() {
       textarea.remove();
     }
     setNotice(`${label}已复制`);
+  };
+
+  const booksWithCurrentEntries = () => worldBooks.map((book) => book.id === activeWorldBookId
+    ? { ...book, entries: cloneEntries(entries), updatedAt: new Date().toISOString() }
+    : book);
+
+  const recordsWithCurrentDraft = () => characters.map((item) => item.id === activeCharacterId
+    ? { ...item, label: draft.name.trim() || item.label || "char", draft: cloneDraft(draft), entries: cloneEntries(entries), worldBooks: booksWithCurrentEntries(), activeWorldBookId, updatedAt: new Date().toISOString() }
+    : item);
+
+  const switchCharacter = (id: string) => {
+    const nextRecords = recordsWithCurrentDraft();
+    const nextCharacter = nextRecords.find((item) => item.id === id);
+    if (!nextCharacter) return;
+    setCharacters(nextRecords);
+    setActiveCharacterId(nextCharacter.id);
+    setDraft(cloneDraft(nextCharacter.draft));
+    const nextBook = nextCharacter.worldBooks.find((book) => book.id === nextCharacter.activeWorldBookId) ?? nextCharacter.worldBooks[0];
+    setWorldBooks(nextCharacter.worldBooks);
+    setActiveWorldBookId(nextBook.id);
+    setEntries(cloneEntries(nextBook.entries));
+    setRevisionPreview(null);
+    setConsistencyIssues(null);
+    setUndoStack([]);
+    setNotice(`已切换到“${nextCharacter.label}”`);
+  };
+
+  const addCharacter = () => {
+    const nextRecords = recordsWithCurrentDraft();
+    const nextDraft = freshDraft();
+    const nextBook: WorldBookRecord = { id: uid(), name: "新角色的世界书", entries: [], updatedAt: new Date().toISOString() };
+    const nextCharacter: CharacterRecord = { id: uid(), label: `新角色 ${nextRecords.length + 1}`, draft: nextDraft, entries: [], worldBooks: [nextBook], activeWorldBookId: nextBook.id, updatedAt: new Date().toISOString() };
+    setCharacters([...nextRecords, nextCharacter]);
+    setActiveCharacterId(nextCharacter.id);
+    setDraft(nextDraft);
+    setWorldBooks([nextBook]);
+    setActiveWorldBookId(nextBook.id);
+    setEntries([]);
+    setUndoStack([]);
+    setConsistencyIssues(null);
+    setNotice("已新建独立角色档案");
+  };
+
+  const duplicateCharacter = () => {
+    const nextRecords = recordsWithCurrentDraft();
+    const duplicateDraft = cloneDraft(draft);
+    duplicateDraft.name = `${draft.name || "char"} 副本`;
+    const activeBookIndex = Math.max(0, worldBooks.findIndex((book) => book.id === activeWorldBookId));
+    const duplicatedBooks = booksWithCurrentEntries().map((book) => ({ ...book, id: uid(), name: `${book.name} 副本`, entries: cloneEntries(book.entries).map((entry) => ({ ...entry, id: uid() })) }));
+    const duplicate: CharacterRecord = {
+      id: uid(),
+      label: duplicateDraft.name,
+      draft: duplicateDraft,
+      entries: cloneEntries(duplicatedBooks[activeBookIndex]?.entries ?? []),
+      worldBooks: duplicatedBooks,
+      activeWorldBookId: duplicatedBooks[activeBookIndex]?.id ?? duplicatedBooks[0].id,
+      updatedAt: new Date().toISOString(),
+    };
+    setCharacters([...nextRecords, duplicate]);
+    setActiveCharacterId(duplicate.id);
+    setDraft(duplicateDraft);
+    setWorldBooks(duplicatedBooks);
+    setActiveWorldBookId(duplicate.activeWorldBookId);
+    setEntries(cloneEntries(duplicate.entries));
+    setUndoStack([]);
+    setConsistencyIssues(null);
+    setNotice("已复制为新的角色档案");
+  };
+
+  const deleteCharacter = () => {
+    if (characters.length <= 1) {
+      setNotice("至少保留一个角色档案");
+      return;
+    }
+    if (!window.confirm(`确定删除角色“${draft.name || "char"}”吗？此操作无法撤销。`)) return;
+    const remaining = characters.filter((item) => item.id !== activeCharacterId);
+    const nextCharacter = remaining[0];
+    setCharacters(remaining);
+    setActiveCharacterId(nextCharacter.id);
+    setDraft(cloneDraft(nextCharacter.draft));
+    const nextBook = nextCharacter.worldBooks.find((book) => book.id === nextCharacter.activeWorldBookId) ?? nextCharacter.worldBooks[0];
+    setWorldBooks(nextCharacter.worldBooks);
+    setActiveWorldBookId(nextBook.id);
+    setEntries(cloneEntries(nextBook.entries));
+    setUndoStack([]);
+    setConsistencyIssues(null);
+    setNotice("角色档案已删除");
+  };
+
+  const pushUndo = (label: string) => {
+    const snapshot: UndoSnapshot = { label, draft: cloneDraft(draft), entries: cloneEntries(entries) };
+    setUndoStack((current) => [...current.slice(-9), snapshot]);
+  };
+
+  const undoLastChange = () => {
+    const previous = undoStack[undoStack.length - 1];
+    if (!previous) return;
+    setDraft(cloneDraft(previous.draft));
+    setEntries(cloneEntries(previous.entries));
+    setUndoStack((current) => current.slice(0, -1));
+    setRevisionPreview(null);
+    setNotice(`已撤销：${previous.label}`);
+  };
+
+  const changeBackgroundImage = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/") || file.size > 1_500_000) {
+      setNotice("请选择不超过 1.5MB 的图片作为背景");
+      event.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBackgroundImage(typeof reader.result === "string" ? reader.result : "");
+      setNotice("自定义背景已保存到本机");
+    };
+    reader.onerror = () => setNotice("背景图片读取失败");
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  };
+
+  const exportWorkspace = () => {
+    const safeApi = { ...api, apiKey: "" };
+    const safeSavedApis = savedApis.map((item) => ({ ...item, apiKey: "" }));
+    saveFile("Char_完整备份.json", JSON.stringify({
+      format: "char-workspace-backup-v1",
+      exportedAt: new Date().toISOString(),
+      activeCharacterId,
+      characters: recordsWithCurrentDraft(),
+      library,
+      api: safeApi,
+      savedApis: safeSavedApis,
+      tone,
+      generationMode,
+    }, null, 2), "application/json");
+    setNotice("完整备份已导出；为安全起见不包含 API Key");
+  };
+
+  const importWorkspace = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text()) as Partial<{
+        format: string;
+        activeCharacterId: string;
+        characters: CharacterRecord[];
+        library: LibraryEntry[];
+        api: ApiPreset;
+        savedApis: ApiPreset[];
+        tone: Tone;
+        generationMode: GenerationMode;
+      }>;
+      if (payload.format !== "char-workspace-backup-v1" || !Array.isArray(payload.characters) || !payload.characters.length) throw new Error("不是有效的 Char 完整备份");
+      const restored = payload.characters.map((item, index) => {
+        const restoredDraft = { ...freshDraft(), ...item.draft, greetings: item.draft?.greetings?.length ? item.draft.greetings : [""] };
+        const existingEntries = Array.isArray(item.entries) ? item.entries : [];
+        const restoredBooks = Array.isArray(item.worldBooks) && item.worldBooks.length
+          ? item.worldBooks
+          : [{ id: uid(), name: `${restoredDraft.name || `角色 ${index + 1}`}的世界书`, entries: existingEntries, updatedAt: new Date().toISOString() }];
+        const restoredBook = restoredBooks.find((book) => book.id === item.activeWorldBookId) ?? restoredBooks[0];
+        return {
+          ...item,
+          id: item.id || uid(),
+          label: item.label || restoredDraft.name || `角色 ${index + 1}`,
+          draft: restoredDraft,
+          entries: restoredBook.entries,
+          worldBooks: restoredBooks,
+          activeWorldBookId: restoredBook.id,
+          updatedAt: item.updatedAt || new Date().toISOString(),
+        };
+      });
+      const active = restored.find((item) => item.id === payload.activeCharacterId) ?? restored[0];
+      const activeBook = active.worldBooks.find((book) => book.id === active.activeWorldBookId) ?? active.worldBooks[0];
+      setCharacters(restored);
+      setActiveCharacterId(active.id);
+      setDraft(cloneDraft(active.draft));
+      setWorldBooks(active.worldBooks);
+      setActiveWorldBookId(activeBook.id);
+      setEntries(cloneEntries(activeBook.entries));
+      if (Array.isArray(payload.library)) setLibrary(payload.library);
+      if (payload.api) setApi({ ...DEFAULT_API, ...payload.api, apiKey: "" });
+      if (Array.isArray(payload.savedApis)) setSavedApis(payload.savedApis.map((item) => ({ ...item, apiKey: "" })));
+      if (payload.tone) setTone(payload.tone);
+      if (payload.generationMode) setGenerationMode(payload.generationMode);
+      setUndoStack([]);
+      setConsistencyIssues(null);
+      setNotice(`已恢复 ${restored.length} 个角色档案，请重新填写 API Key`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "完整备份导入失败");
+    }
+    event.target.value = "";
   };
 
   const withLibrary = (prompt: string) => enabledLibraryText
@@ -473,6 +794,7 @@ export default function Home() {
           : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`),
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[] };
+      pushUndo("生成完整角色卡");
       setDraft((current) => ({
         ...current,
         ...parsed,
@@ -536,40 +858,137 @@ export default function Home() {
         section,
       );
 
+      let previewValue: unknown;
       if (section === "basic") {
         const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft>;
         const basicKeys: Array<keyof CharacterDraft> = ["name", "gender", "note", "nickname", "signature", "age", "suffix", "language"];
-        setDraft((current) => {
-          const next = { ...current };
-          basicKeys.forEach((key) => {
-            if (typeof parsed[key] === "string") (next[key] as string) = parsed[key] as string;
-          });
-          return next;
-        });
+        previewValue = basicKeys.reduce<Record<string, string>>((result, key) => {
+          result[key] = typeof parsed[key] === "string" ? parsed[key] as string : draft[key] as string;
+          return result;
+        }, {});
       } else if (section === "greetings") {
         const parsed = JSON.parse(cleanJsonText(text));
         if (!Array.isArray(parsed)) throw new Error("开场白格式不正确，请重试");
-        updateDraft("greetings", parsed.filter((item): item is string => typeof item === "string"));
+        previewValue = parsed.filter((item): item is string => typeof item === "string");
       } else if (section === "world") {
         const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
         if (!Array.isArray(parsed)) throw new Error("世界书格式不正确，请重试");
-        setEntries(normalizeWorldEntries(parsed));
+        previewValue = normalizeWorldEntries(parsed);
       } else {
-        const fieldMap: Record<Exclude<RevisionSection, "basic" | "greetings" | "world">, keyof CharacterDraft> = {
-          persona: "persona",
-          biography: "biography",
-          appearance: "appearance",
-          conflicts: "conflicts",
-        };
-        updateDraft(fieldMap[section], text.trim());
+        previewValue = text.trim();
       }
-
-      updateRevisionNote(section, "");
-      setNotice("已按你的建议完成优化；其他部分保持不变");
+      setRevisionPreview({
+        section,
+        label: section === "world" ? "世界书" : section === "greetings" ? "开场白" : section === "basic" ? "基础信息" : section === "persona" ? "人设正文" : section === "biography" ? "人物小传" : section === "appearance" ? "生图外貌" : "冲突与缺失信息",
+        before: revisionText(currentContent[section]),
+        after: revisionText(previewValue),
+        value: previewValue,
+      });
+      setNotice("AI 优化完成，请预览后决定是否应用");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "优化失败，请稍后重试");
     } finally {
       setRevising(null);
+    }
+  };
+
+  const applyRevisionPreview = () => {
+    if (!revisionPreview) return;
+    pushUndo(`应用${revisionPreview.label}优化`);
+    const { section, value, greetingIndex } = revisionPreview;
+    if (section === "basic") {
+      setDraft((current) => ({ ...current, ...(value as Partial<CharacterDraft>) }));
+    } else if (section === "greetings") {
+      if (typeof greetingIndex === "number") {
+        const next = [...draft.greetings];
+        next[greetingIndex] = String(value);
+        updateDraft("greetings", next);
+      } else {
+        updateDraft("greetings", value as string[]);
+      }
+    } else if (section === "world") {
+      setEntries(cloneEntries(value as WorldEntry[]));
+    } else {
+      const fieldMap: Record<Exclude<RevisionSection, "basic" | "greetings" | "world">, keyof CharacterDraft> = {
+        persona: "persona",
+        biography: "biography",
+        appearance: "appearance",
+        conflicts: "conflicts",
+      };
+      updateDraft(fieldMap[section], String(value));
+    }
+    updateRevisionNote(section, "");
+    if (typeof greetingIndex === "number") setGreetingNotes((current) => ({ ...current, [greetingIndex]: "" }));
+    setRevisionPreview(null);
+    setConsistencyIssues(null);
+    setNotice(`已应用${revisionPreview.label}优化，可随时撤销`);
+  };
+
+  const moveGreeting = (from: number, to: number) => {
+    if (to < 0 || to >= draft.greetings.length || from === to) return;
+    const next = [...draft.greetings];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    updateDraft("greetings", next);
+    setNotice("开场白顺序已调整");
+  };
+
+  const dropGreeting = (event: DragEvent<HTMLDivElement>, to: number) => {
+    event.preventDefault();
+    if (dragGreetingIndex !== null) moveGreeting(dragGreetingIndex, to);
+    setDragGreetingIndex(null);
+  };
+
+  const duplicateGreeting = (index: number) => {
+    const next = [...draft.greetings];
+    next.splice(index + 1, 0, draft.greetings[index]);
+    updateDraft("greetings", next);
+    setNotice(`已复制开场白 ${index + 1}`);
+  };
+
+  const optimizeGreeting = async (index: number) => {
+    const suggestion = greetingNotes[index]?.trim();
+    if (!suggestion) return;
+    setRevising("greetings");
+    setNotice(`正在单独优化开场白 ${index + 1}…`);
+    try {
+      const text = await callModel(
+        "revise",
+        withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前仅这一条开场白】\n${JSON.stringify([draft.greetings[index]])}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，并仅返回包含一个字符串的 JSON 数组。`),
+        "greetings",
+      );
+      const parsed = JSON.parse(cleanJsonText(text));
+      if (!Array.isArray(parsed) || typeof parsed[0] !== "string") throw new Error("单条开场白格式不正确，请重试");
+      setRevisionPreview({
+        section: "greetings",
+        label: `开场白 ${index + 1}`,
+        before: draft.greetings[index],
+        after: parsed[0],
+        value: parsed[0],
+        greetingIndex: index,
+      });
+      setNotice("单条开场白优化完成，请预览后决定是否应用");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "开场白优化失败");
+    } finally {
+      setRevising(null);
+    }
+  };
+
+  const checkConsistency = async () => {
+    setBusy("check");
+    setNotice("正在检查角色卡内部一致性…");
+    try {
+      const text = await callModel("check", withLibrary(JSON.stringify({ draft, worldBook: entries }, null, 2)));
+      const parsed = JSON.parse(cleanJsonText(text));
+      if (!Array.isArray(parsed)) throw new Error("检查结果格式不正确，请重试");
+      const issues = parsed.flatMap((item) => typeof item === "string" ? [item] : []);
+      setConsistencyIssues(issues);
+      setNotice(issues.length ? `发现 ${issues.length} 项需要确认的内容` : "一致性检查通过，没有发现明显问题");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "一致性检查失败");
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -587,9 +1006,19 @@ export default function Home() {
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
       if (!Array.isArray(parsed)) throw new Error("模型返回的世界书格式不正确");
-      setEntries(normalizeWorldEntries(parsed));
+      pushUndo("生成世界书");
+      const generatedEntries = normalizeWorldEntries(parsed);
+      const nextBook: WorldBookRecord = {
+        id: uid(),
+        name: `${draft.name || "char"}的世界书 ${worldBooks.length + 1}`,
+        entries: generatedEntries,
+        updatedAt: new Date().toISOString(),
+      };
+      setWorldBooks([...booksWithCurrentEntries(), nextBook]);
+      setActiveWorldBookId(nextBook.id);
+      setEntries(generatedEntries);
       setView("world");
-      setNotice("世界书已生成，可继续编辑与导出");
+      setNotice(`已新建并绑定世界书“${nextBook.name}”`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "世界书生成失败");
     } finally {
@@ -623,27 +1052,68 @@ export default function Home() {
     event.target.value = "";
   };
 
-  const exportCharacter = (format: "json" | "txt") => {
-    const filename = `${draft.name || "未命名角色"}_角色卡.${format}`;
+  const characterText = () => [
+    `【01 基础信息】\n名字：${draft.name || "未提供"}\n性别：${draft.gender || "未提供"}\n备注：${draft.note || "未提供"}\n网名：${draft.nickname || "未提供"}\n签名：${draft.signature || "未提供"}\n年龄：${draft.age || "未提供"}\n被拍后缀：${draft.suffix || "未提供"}\n文化母语：${draft.language || "未提供"}`,
+    `【02 人设正文】\n${draft.persona || "未提供"}`,
+    `【03 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}\n${item || "未提供"}`).join("\n\n")}`,
+    `【04 人物小传】\n${draft.biography || "未提供"}`,
+    `【05 生图外貌】\n${draft.appearance || "未提供"}`,
+    `【06 世界书】\n${entries.map((item) => `${item.title}｜${item.keys}\n${item.content}`).join("\n\n") || "未提供"}`,
+    `【07 缺失信息与设定冲突】\n${draft.conflicts || "未提供"}`,
+  ].join("\n\n");
+
+  const characterMarkdown = () => [
+    `# ${draft.name || "char"}`,
+    `## 基础信息\n\n- 性别：${draft.gender || "未提供"}\n- 年龄：${draft.age || "未提供"}\n- 网名：${draft.nickname || "未提供"}\n- 签名：${draft.signature || "未提供"}\n- 被拍后缀：${draft.suffix || "未提供"}\n- 文化母语：${draft.language || "未提供"}\n- 备注：${draft.note || "未提供"}`,
+    `## 人设正文\n\n${draft.persona || "未提供"}`,
+    `## 开场白\n\n${draft.greetings.map((item, index) => `### 开场白 ${index + 1}\n\n${item || "未提供"}`).join("\n\n")}`,
+    `## 人物小传\n\n${draft.biography || "未提供"}`,
+    `## 生图外貌\n\n${draft.appearance || "未提供"}`,
+    `## 世界书\n\n${entries.map((item) => `### ${item.title}\n\n关键词：${item.keys || "无"}\n\n${item.content}`).join("\n\n") || "未提供"}`,
+    `## 缺失信息与设定冲突\n\n${draft.conflicts || "未提供"}`,
+  ].join("\n\n");
+
+  const exportCharacter = (format: "json" | "txt" | "md" | "sillytavern") => {
+    const baseName = `${draft.name || "未命名角色"}_角色卡`;
     if (format === "json") {
-      saveFile(filename, JSON.stringify({ format: "char-character-card-v1", ...draft, worldBook: entries, promptLibrary: library }, null, 2), "application/json");
+      saveFile(`${baseName}.json`, JSON.stringify({ format: "char-character-card-v1", ...draft, worldBook: entries, promptLibrary: library }, null, 2), "application/json");
       return;
     }
-    const content = [
-      `【01 基础信息】\n名字：${draft.name || "未提供"}\n性别：${draft.gender || "未提供"}\n备注：${draft.note || "未提供"}\n网名：${draft.nickname || "未提供"}\n签名：${draft.signature || "未提供"}\n年龄：${draft.age || "未提供"}\n被拍后缀：${draft.suffix || "未提供"}\n文化母语：${draft.language || "未提供"}`,
-      `【02 人设正文】\n${draft.persona || "未提供"}`,
-      `【03 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}\n${item || "未提供"}`).join("\n\n")}`,
-      `【04 人物小传】\n${draft.biography || "未提供"}`,
-      `【05 生图外貌】\n${draft.appearance || "未提供"}`,
-      `【06 世界书】\n${entries.map((item) => `${item.title}｜${item.keys}\n${item.content}`).join("\n\n") || "未提供"}`,
-      `【07 缺失信息与设定冲突】\n${draft.conflicts || "未提供"}`,
-    ].join("\n\n");
-    saveFile(filename, content);
+    if (format === "md") {
+      saveFile(`${baseName}.md`, characterMarkdown(), "text/markdown;charset=utf-8");
+      return;
+    }
+    if (format === "sillytavern") {
+      const card = {
+        spec: "chara_card_v2",
+        spec_version: "2.0",
+        data: {
+          name: draft.name || "char",
+          description: draft.persona,
+          personality: draft.persona,
+          scenario: draft.background,
+          first_mes: draft.greetings[0] || "",
+          mes_example: "",
+          creator_notes: [draft.note, draft.biography && `人物小传：\n${draft.biography}`, draft.appearance && `生图外貌：\n${draft.appearance}`].filter(Boolean).join("\n\n"),
+          system_prompt: "",
+          post_history_instructions: "",
+          alternate_greetings: draft.greetings.slice(1).filter(Boolean),
+          tags: [],
+          creator: "Char",
+          character_version: "1.0",
+          extensions: { char: { conflicts: draft.conflicts, worldBook: entries } },
+        },
+      };
+      saveFile(`${draft.name || "char"}_SillyTavern_V2.json`, JSON.stringify(card, null, 2), "application/json");
+      return;
+    }
+    saveFile(`${baseName}.txt`, characterText());
   };
 
   const exportWorld = () => {
+    const activeBook = worldBooks.find((book) => book.id === activeWorldBookId);
     const worldBook = {
-      name: `${draft.name || "角色"}的世界书`,
+      name: activeBook?.name || `${draft.name || "角色"}的世界书`,
       format: "char-world-book-v1",
       entries: entries.map((entry, index) => ({
         uid: index,
@@ -658,7 +1128,7 @@ export default function Home() {
         category: entry.category,
       })),
     };
-    saveFile(`${draft.name || "未命名"}_世界书.json`, JSON.stringify(worldBook, null, 2), "application/json");
+    saveFile(`${worldBook.name || "未命名世界书"}.json`, JSON.stringify(worldBook, null, 2), "application/json");
   };
 
   const installApp = async () => {
@@ -672,6 +1142,64 @@ export default function Home() {
 
   const updateEntry = (id: string, patch: Partial<WorldEntry>) => {
     setEntries((current) => current.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+  };
+
+  const switchWorldBook = (id: string) => {
+    const nextBooks = booksWithCurrentEntries();
+    const nextBook = nextBooks.find((book) => book.id === id);
+    if (!nextBook) return;
+    setWorldBooks(nextBooks);
+    setActiveWorldBookId(nextBook.id);
+    setEntries(cloneEntries(nextBook.entries));
+    setUndoStack([]);
+    setNotice(`已切换到“${nextBook.name}”`);
+  };
+
+  const addWorldBook = () => {
+    const nextBook: WorldBookRecord = { id: uid(), name: `${draft.name || "char"}的新世界书`, entries: [], updatedAt: new Date().toISOString() };
+    setWorldBooks([...booksWithCurrentEntries(), nextBook]);
+    setActiveWorldBookId(nextBook.id);
+    setEntries([]);
+    setUndoStack([]);
+    setNotice(`已为“${draft.name || "char"}”新建一本世界书`);
+  };
+
+  const duplicateWorldBook = () => {
+    const currentBook = worldBooks.find((book) => book.id === activeWorldBookId);
+    if (!currentBook) return;
+    const duplicate: WorldBookRecord = { id: uid(), name: `${currentBook.name} 副本`, entries: cloneEntries(entries).map((entry) => ({ ...entry, id: uid() })), updatedAt: new Date().toISOString() };
+    setWorldBooks([...booksWithCurrentEntries(), duplicate]);
+    setActiveWorldBookId(duplicate.id);
+    setEntries(cloneEntries(duplicate.entries));
+    setUndoStack([]);
+    setNotice("世界书副本已创建并绑定当前角色");
+  };
+
+  const renameWorldBook = (name: string) => {
+    setWorldBooks((current) => current.map((book) => book.id === activeWorldBookId ? { ...book, name } : book));
+  };
+
+  const deleteWorldBook = () => {
+    if (worldBooks.length <= 1) {
+      setNotice("每个角色至少保留一本世界书");
+      return;
+    }
+    const currentBook = worldBooks.find((book) => book.id === activeWorldBookId);
+    if (!window.confirm(`确定删除世界书“${currentBook?.name || "未命名"}”吗？`)) return;
+    const remaining = worldBooks.filter((book) => book.id !== activeWorldBookId);
+    setWorldBooks(remaining);
+    setActiveWorldBookId(remaining[0].id);
+    setEntries(cloneEntries(remaining[0].entries));
+    setUndoStack([]);
+    setNotice("世界书已删除，角色其他世界书不受影响");
+  };
+
+  const saveWorldBookNow = () => {
+    const savedAt = new Date();
+    const nextBooks = worldBooks.map((book) => book.id === activeWorldBookId ? { ...book, entries: cloneEntries(entries), updatedAt: savedAt.toISOString() } : book);
+    setWorldBooks(nextBooks);
+    setLastSavedAt(savedAt);
+    setNotice(`世界书已保存，并绑定角色“${draft.name || "char"}”`);
   };
 
   const addEntry = () => {
@@ -692,6 +1220,11 @@ export default function Home() {
 
   const updateLibraryEntry = (id: string, patch: Partial<LibraryEntry>) => {
     setLibrary((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  const duplicateLibraryEntry = (item: LibraryEntry) => {
+    setLibrary((current) => [...current, { ...item, id: uid(), title: `${item.title || "资料"} 副本` }]);
+    setNotice("资料条目已复制");
   };
 
   const saveLibraryNow = () => {
@@ -753,7 +1286,11 @@ export default function Home() {
   };
 
   return (
-    <div className="app-shell" data-tone={tone}>
+    <div
+      className="app-shell"
+      data-tone={tone}
+      style={backgroundImage ? { "--custom-bg": `url(${JSON.stringify(backgroundImage)})` } as CSSProperties : undefined}
+    >
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("character")} aria-label="返回角色卡首页">
           <span className="brand-mark">C</span>
@@ -789,7 +1326,7 @@ export default function Home() {
       <main className="main-stage">
         <header className="topbar">
           <div className="mobile-brand">Char</div>
-          <div className="status-pill"><span /> {notice}</div>
+          <div className="status-pill" title={lastSavedAt ? `上次保存：${lastSavedAt.toLocaleString()}` : notice}><span /> {notice}{lastSavedAt && <small> · {lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 已保存</small>}</div>
           <div className="top-actions">
             <label className="tone-select">
               <span>背景</span>
@@ -799,12 +1336,32 @@ export default function Home() {
                 <option value="paper">纸白</option>
               </select>
             </label>
+            {undoStack.length > 0 && <button className="quiet-button" onClick={undoLastChange}>撤销</button>}
             <button className="quiet-button" onClick={() => exportCharacter("json")}>导出 JSON</button>
           </div>
         </header>
 
         {view === "character" && (
           <div className="page-wrap">
+            <section className="character-manager" aria-label="角色档案管理">
+              <div className="character-manager-main">
+                <span>CHARACTER FILE</span>
+                <select aria-label="切换角色档案" value={activeCharacterId} onChange={(event) => switchCharacter(event.target.value)}>
+                  {characters.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+                <small>{characters.length} 个角色 · {lastSavedAt ? `${lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 已保存` : "正在准备存档"}</small>
+              </div>
+              <div className="character-manager-actions">
+                <button onClick={addCharacter}>＋ 新角色</button>
+                <button onClick={duplicateCharacter}>复制角色</button>
+                <button onClick={undoLastChange} disabled={!undoStack.length}>撤销修改</button>
+                <button onClick={exportWorkspace}>完整备份</button>
+                <label>恢复备份<input type="file" accept="application/json,.json" onChange={importWorkspace} /></label>
+                <label>背景图<input type="file" accept="image/*" onChange={changeBackgroundImage} /></label>
+                {backgroundImage && <button onClick={() => { setBackgroundImage(""); setNotice("已恢复默认背景"); }}>清除背景</button>}
+                <button className="danger" onClick={deleteCharacter} disabled={characters.length <= 1}>删除角色</button>
+              </div>
+            </section>
             <section className="hero">
               <div className="hero-copy">
                 <span className="eyebrow">CHARACTER ARCHIVE · 角色档案</span>
@@ -923,20 +1480,37 @@ export default function Home() {
               </div>
               <div className="greeting-list">
                 {draft.greetings.map((greeting, index) => (
-                  <div className="greeting-item" key={index}>
-                    <span>{String(index + 1).padStart(2, "0")}</span>
-                    <textarea
-                      aria-label={`开场白 ${index + 1}`}
-                      rows={5}
-                      value={greeting}
-                      placeholder={index === 0 ? "包含场景、动作与角色对白，让用户能自然接话……" : "另一个互动情境……"}
-                      onChange={(event) => {
-                        const next = [...draft.greetings];
-                        next[index] = event.target.value;
-                        updateDraft("greetings", next);
-                      }}
-                    />
+                  <div
+                    className={`greeting-item ${dragGreetingIndex === index ? "dragging" : ""}`}
+                    key={index}
+                    draggable
+                    onDragStart={() => setDragGreetingIndex(index)}
+                    onDragEnd={() => setDragGreetingIndex(null)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => dropGreeting(event, index)}
+                  >
+                    <span title="拖拽排序">{String(index + 1).padStart(2, "0")}</span>
+                    <div className="greeting-editor">
+                      <textarea
+                        aria-label={`开场白 ${index + 1}`}
+                        rows={5}
+                        value={greeting}
+                        placeholder={index === 0 ? "包含场景、动作与角色对白，让用户能自然接话……" : "另一个互动情境……"}
+                        onChange={(event) => {
+                          const next = [...draft.greetings];
+                          next[index] = event.target.value;
+                          updateDraft("greetings", next);
+                        }}
+                      />
+                      <div className="single-greeting-refine">
+                        <input aria-label={`开场白 ${index + 1} 修改建议`} value={greetingNotes[index] || ""} onChange={(event) => setGreetingNotes((current) => ({ ...current, [index]: event.target.value }))} placeholder="只优化这一条，例如：改成雨夜重逢，语气更自然" />
+                        <button onClick={() => optimizeGreeting(index)} disabled={revising !== null || !greetingNotes[index]?.trim()}>{revising === "greetings" ? "优化中…" : "AI 优化此条"}</button>
+                      </div>
+                    </div>
                     <div className="greeting-actions">
+                      <button aria-label={`上移开场白 ${index + 1}`} onClick={() => moveGreeting(index, index - 1)} disabled={index === 0}>↑</button>
+                      <button aria-label={`下移开场白 ${index + 1}`} onClick={() => moveGreeting(index, index + 1)} disabled={index === draft.greetings.length - 1}>↓</button>
+                      <button onClick={() => duplicateGreeting(index)}>复制一条</button>
                       <button className="copy-button" onClick={() => copyText(`开场白 ${index + 1}`, greeting)} disabled={!greeting.trim()}>复制</button>
                       {draft.greetings.length > 1 && (
                         <button className="greeting-delete" aria-label={`删除开场白 ${index + 1}`} onClick={() => updateDraft("greetings", draft.greetings.filter((_, itemIndex) => itemIndex !== index))}>×</button>
@@ -993,9 +1567,21 @@ export default function Home() {
                 loading={revising === "conflicts"}
                 example="例如：把已经确认的年龄从冲突项中删除，其余保留"
               />
+              <div className="quality-panel">
+                <div><span>CONSISTENCY CHECK</span><b>检查人设、经历、开场白和世界书是否互相矛盾</b></div>
+                <button className="secondary-button" onClick={checkConsistency} disabled={busy !== null}>{busy === "check" ? "检查中…" : "AI 一致性检查"}</button>
+                {consistencyIssues !== null && (
+                  <div className={`quality-results ${consistencyIssues.length === 0 ? "passed" : ""}`}>
+                    {consistencyIssues.length === 0 ? <p>没有发现明显矛盾，变量规范也符合要求。</p> : <ol>{consistencyIssues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ol>}
+                  </div>
+                )}
+              </div>
               <div className="export-row">
                 <div><b>完成后导出</b><span>可再次导入此工作台，也可复制到其他角色平台。</span></div>
+                <button className="quiet-button" onClick={() => copyText("完整角色卡", characterText())}>复制整卡</button>
                 <button className="quiet-button" onClick={() => exportCharacter("txt")}>下载 TXT</button>
+                <button className="quiet-button" onClick={() => exportCharacter("md")}>下载 Markdown</button>
+                <button className="quiet-button" onClick={() => exportCharacter("sillytavern")}>SillyTavern V2</button>
                 <button className="primary-button compact" onClick={() => exportCharacter("json")}>下载 JSON <span>↓</span></button>
               </div>
             </section>
@@ -1025,10 +1611,21 @@ export default function Home() {
               {LIBRARY_CATEGORIES.filter((category) => category !== "变量规范").map((category) => <button key={category} onClick={() => addLibraryEntry(category)}>＋ {category}</button>)}
             </section>
 
+            <section className="library-toolbar" aria-label="资料库搜索与筛选">
+              <input aria-label="搜索资料库" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="搜索标题或内容…" />
+              <select aria-label="按资料类型筛选" value={libraryCategory} onChange={(event) => setLibraryCategory(event.target.value as LibraryCategory | "全部")}>
+                <option>全部</option>
+                {LIBRARY_CATEGORIES.map((category) => <option key={category}>{category}</option>)}
+              </select>
+              <span>显示 {filteredLibrary.length} / {library.length} 条</span>
+            </section>
+
             <section className="library-list">
               {library.length === 0 ? (
                 <div className="empty-state"><span>空</span><h2>还没有长期资料</h2><p>添加一条人设要求，或导入已有的世界书 JSON / TXT。</p><button className="secondary-button" onClick={() => addLibraryEntry()}>新建第一条资料</button></div>
-              ) : library.map((item, index) => (
+              ) : filteredLibrary.length === 0 ? (
+                <div className="empty-state"><span>0</span><h2>没有匹配的资料</h2><p>换一个关键词或选择“全部”分类。</p><button className="secondary-button" onClick={() => { setLibraryQuery(""); setLibraryCategory("全部"); }}>清除筛选</button></div>
+              ) : filteredLibrary.map((item, index) => (
                 <article className={`library-entry ${item.enabled ? "active" : ""}`} key={item.id}>
                   <div className="library-entry-number">{String(index + 1).padStart(2, "0")}</div>
                   <div className="library-entry-main">
@@ -1040,7 +1637,11 @@ export default function Home() {
                     <div className="library-entry-footer">
                       <label className="switch"><input type="checkbox" checked={item.enabled} onChange={(event) => updateLibraryEntry(item.id, { enabled: event.target.checked })} /><span /> {item.enabled ? "已启用" : "已停用"}</label>
                       <small>{item.content.length} 字</small>
-                      <button onClick={() => setLibrary((current) => current.filter((entry) => entry.id !== item.id))}>删除</button>
+                      <div className="library-row-actions">
+                        <button onClick={() => copyText(item.title || "资料条目", item.content)} disabled={!item.content.trim()}>复制</button>
+                        <button onClick={() => duplicateLibraryEntry(item)}>创建副本</button>
+                        <button className="danger" onClick={() => setLibrary((current) => current.filter((entry) => entry.id !== item.id))}>删除</button>
+                      </div>
                     </div>
                   </div>
                 </article>
@@ -1052,10 +1653,22 @@ export default function Home() {
         {view === "world" && (
           <div className="page-wrap world-page">
             <section className="page-intro">
-              <div><span className="eyebrow">WORLD ARCHIVE · 世界档案</span><h1>让背景设定在正确的时机被想起。</h1><p>把时代、地点、组织、规则与关系拆成可触发条目，避免所有设定都挤进人设正文。</p></div>
+              <div><span className="eyebrow">WORLD ARCHIVE · 世界档案</span><h1>让背景设定在正确的时机被想起。</h1><p>每个角色可以绑定多本独立世界书。AI 再次生成时会另存一本，不会覆盖之前的内容。</p></div>
               <div className="page-intro-actions">
                 <button className="quiet-button" onClick={addEntry}>＋ 新建条目</button>
                 <button className="primary-button compact" onClick={generateWorld} disabled={busy !== null}>{busy === "world" ? "生成中…" : "AI 生成条目"}<span>→</span></button>
+              </div>
+            </section>
+
+            <section className="world-book-manager" aria-label="当前角色的世界书">
+              <div className="world-book-binding"><span>BOUND CHARACTER</span><b>{draft.name || "char"}</b><small>已绑定 {worldBooks.length} 本世界书</small></div>
+              <label><span>切换世界书</span><select value={activeWorldBookId} onChange={(event) => switchWorldBook(event.target.value)}>{worldBooks.map((book) => <option key={book.id} value={book.id}>{book.name}</option>)}</select></label>
+              <label><span>世界书名称</span><input value={activeWorldBook?.name || ""} onChange={(event) => renameWorldBook(event.target.value)} placeholder="给这本世界书命名" /></label>
+              <div className="world-book-actions">
+                <button onClick={addWorldBook}>＋ 新建一本</button>
+                <button onClick={duplicateWorldBook}>复制此书</button>
+                <button onClick={saveWorldBookNow}>保存并绑定</button>
+                <button className="danger" onClick={deleteWorldBook} disabled={worldBooks.length <= 1}>删除此书</button>
               </div>
             </section>
 
@@ -1072,8 +1685,8 @@ export default function Home() {
             </section>
 
             <div className="world-toolbar">
-              <div><b>{entries.length}</b><span> 条设定</span></div>
-              <button className="quiet-button" onClick={exportWorld} disabled={!entries.length}>导出世界书 JSON</button>
+              <div><b>{activeWorldBook?.name || "未命名世界书"}</b><span> · {entries.length} 条设定</span></div>
+              <button className="quiet-button" onClick={exportWorld} disabled={!entries.length}>单独导出此书 JSON</button>
             </div>
 
             <section className="world-list">
@@ -1178,6 +1791,26 @@ export default function Home() {
               <div><span>01</span><b>添加 API 站点</b><p>选择“兼容接口”，填写站点的 /v1 地址和 API Key。</p></div>
               <div><span>02</span><b>拉取并选择模型</b><p>点击“拉取模型”，也可在站点不支持列表接口时手动输入模型 ID。</p></div>
               <div><span>03</span><b>保存多个预设</b><p>保存后可在不同 API 站点之间切换，用于角色卡和世界书生成。</p></div>
+            </section>
+          </div>
+        )}
+
+        {revisionPreview && (
+          <div className="revision-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRevisionPreview(null); }}>
+            <section className="revision-preview" role="dialog" aria-modal="true" aria-labelledby="revision-preview-title">
+              <div className="revision-preview-heading">
+                <div><span>AI REVISION PREVIEW</span><h2 id="revision-preview-title">应用{revisionPreview.label}修改前，先核对内容。</h2></div>
+                <button aria-label="关闭修改预览" onClick={() => setRevisionPreview(null)}>×</button>
+              </div>
+              <div className="revision-compare">
+                <article><span>当前版本</span><pre>{revisionPreview.before || "（空）"}</pre></article>
+                <article className="new"><span>AI 新版本</span><pre>{revisionPreview.after || "（空）"}</pre></article>
+              </div>
+              <div className="revision-preview-actions">
+                <button className="quiet-button" onClick={() => setRevisionPreview(null)}>保留原文</button>
+                <button className="secondary-button" onClick={() => setRevisionPreview(null)}>继续调整建议</button>
+                <button className="primary-button compact" onClick={applyRevisionPreview}>应用新版本 <span>→</span></button>
+              </div>
             </section>
           </div>
         )}

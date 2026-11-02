@@ -4,7 +4,7 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 
 type GenerateRequest = {
-  mode?: "character-create" | "character-extract" | "world" | "revise" | "test" | "models";
+  mode?: "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "models";
   section?: RevisionSection;
   prompt?: string;
   preset?: {
@@ -22,6 +22,7 @@ const CHARACTER_EXTRACT_SYSTEM = `你是专业的 AI 角色设定整理师。完
 const CHARACTER_CREATE_SYSTEM = `你是专业的 AI 角色设定创作师。用户会提供想要的人设方向与世界背景，请在严格遵守这些要求的前提下，直接创作一张完整、可长期稳定扮演的角色卡。合理补齐姓名、经历、关系、行为逻辑、语言习惯和视觉细节，使各模块互相一致；不要加入违背用户要求的身份、性格或关系。避免空泛标签、完美化人物和套路化表达，让角色有缺点、矛盾、欲望、恐惧与清晰边界。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是至少 1 条可直接开聊的字符串数组；可按用户要求生成任意数量，不替用户决定言行。persona 以第三人称写身份、背景、性格、心理、目标、弱点、行为逻辑、说话方式、关系与互动模式。biography 按时间线叙述。appearance 只写可视觉化内容。conflicts 用于记录需要用户确认的创作选择，没有则为空字符串。`;
 
 const WORLD_SYSTEM = `你是世界观资料编辑。将输入拆成独立、清晰、可按关键词触发的世界书条目。覆盖必要的时代、地理、地点、国家、组织、制度、历史事件、人物关系、力量体系与特殊规则；不要把无关内容堆在一个条目里，不要编造输入中不存在的事实。只返回合法 JSON 数组，不要 Markdown、解释或代码围栏。每项包含 title, keys, content, category, priority, enabled。keys 是用中文逗号分隔的触发词字符串；category 只能是世界观、地点、组织、人物关系、历史事件、规则、力量体系之一；priority 为 1 到 100 的整数；enabled 为 true。`;
+const CONSISTENCY_SYSTEM = `你是角色卡质量审校员。检查基础信息、人设正文、开场白、人物小传、生图外貌、冲突说明与世界书之间是否存在事实矛盾、年龄或时间线冲突、关系冲突、角色语气偏离、不可视觉化的外貌描述、变量误用，以及替 {{user}} 决定言行或心理的问题。只返回合法 JSON 字符串数组，每条用简洁中文说明具体问题及所在部分；没有发现问题时返回空数组。不要改写原文，不要输出 Markdown 或解释。`;
 
 const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行简短回复。";
 const VARIABLE_SYSTEM = "变量规范：{{char}} 始终代表当前角色，{{user}} 始终代表与角色互动的用户。必须原样保留双花括号变量，不要擅自替换为具体姓名，也不要替 {{user}} 决定言行、台词、心理或过去。";
@@ -183,6 +184,8 @@ export async function POST(request: Request) {
 
   const baseSystem = mode === "world"
     ? WORLD_SYSTEM
+    : mode === "check"
+      ? CONSISTENCY_SYSTEM
     : mode === "test"
       ? TEST_SYSTEM
       : mode === "revise"

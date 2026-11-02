@@ -22,8 +22,18 @@ test("server-renders the Char workspace", async () => {
   const html = await response.text();
   assert.match(html, /Char/);
   assert.match(html, /角色工作室/);
+  assert.match(html, /角色档案管理/);
+  assert.match(html, /完整备份/);
+  assert.match(html, /AI 一致性检查/);
   assert.match(html, /manifest\.webmanifest/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+});
+
+test("keeps multiple world books bound to each character", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /worldBooks: WorldBookRecord\[\]/);
+  assert.match(source, /保存并绑定/);
+  assert.match(source, /AI 再次生成时会另存一本/);
 });
 
 test("ships installable app assets and removes the starter preview", async () => {
