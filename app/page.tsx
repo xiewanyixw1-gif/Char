@@ -59,7 +59,7 @@ type ApiPreset = {
 };
 
 const EMPTY_DRAFT: CharacterDraft = {
-  name: "",
+  name: "char",
   gender: "",
   note: "",
   nickname: "",
@@ -88,7 +88,7 @@ const DEFAULT_API: ApiPreset = {
 
 const DEFAULT_LIBRARY: LibraryEntry[] = [
   {
-    id: "mori-variable-convention",
+    id: "char-variable-convention",
     title: "角色与用户变量规范",
     category: "变量规范",
     content: "角色统一使用 {{char}}，对话用户统一使用 {{user}}。必须保留双花括号，不要擅自替换成具体姓名；不要替 {{user}} 决定言行、心理或过去。",
@@ -284,14 +284,18 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const storedDraft = localStorage.getItem("mori-character-draft");
-      const storedEntries = localStorage.getItem("mori-world-entries");
-      const storedLibrary = localStorage.getItem("mori-prompt-library");
-      const storedApi = localStorage.getItem("mori-api-preset");
-      const storedSavedApis = localStorage.getItem("mori-custom-api-presets");
-      const storedTone = localStorage.getItem("mori-tone") as Tone | null;
-      const storedMode = localStorage.getItem("mori-generation-mode") as GenerationMode | null;
-      if (storedDraft) setDraft({ ...EMPTY_DRAFT, ...JSON.parse(storedDraft) });
+      const readStored = (key: string, legacyKey: string) => localStorage.getItem(key) ?? localStorage.getItem(legacyKey);
+      const storedDraft = readStored("char-character-draft", "mori-character-draft");
+      const storedEntries = readStored("char-world-entries", "mori-world-entries");
+      const storedLibrary = readStored("char-prompt-library", "mori-prompt-library");
+      const storedApi = readStored("char-api-preset", "mori-api-preset");
+      const storedSavedApis = readStored("char-custom-api-presets", "mori-custom-api-presets");
+      const storedTone = readStored("char-tone", "mori-tone") as Tone | null;
+      const storedMode = readStored("char-generation-mode", "mori-generation-mode") as GenerationMode | null;
+      if (storedDraft) {
+        const parsedDraft = JSON.parse(storedDraft) as Partial<CharacterDraft>;
+        setDraft({ ...EMPTY_DRAFT, ...parsedDraft, name: parsedDraft.name?.trim() || "char" });
+      }
       if (storedEntries) setEntries(JSON.parse(storedEntries));
       if (storedLibrary !== null) setLibrary(JSON.parse(storedLibrary));
       if (storedApi) setApi({ ...DEFAULT_API, ...JSON.parse(storedApi) });
@@ -315,13 +319,13 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem("mori-character-draft", JSON.stringify(draft));
-    localStorage.setItem("mori-world-entries", JSON.stringify(entries));
-    localStorage.setItem("mori-prompt-library", JSON.stringify(library));
-    localStorage.setItem("mori-api-preset", JSON.stringify(api));
-    localStorage.setItem("mori-custom-api-presets", JSON.stringify(savedApis));
-    localStorage.setItem("mori-tone", tone);
-    localStorage.setItem("mori-generation-mode", generationMode);
+    localStorage.setItem("char-character-draft", JSON.stringify(draft));
+    localStorage.setItem("char-world-entries", JSON.stringify(entries));
+    localStorage.setItem("char-prompt-library", JSON.stringify(library));
+    localStorage.setItem("char-api-preset", JSON.stringify(api));
+    localStorage.setItem("char-custom-api-presets", JSON.stringify(savedApis));
+    localStorage.setItem("char-tone", tone);
+    localStorage.setItem("char-generation-mode", generationMode);
   }, [api, draft, entries, generationMode, library, ready, savedApis, tone]);
 
   const completion = useMemo(() => {
@@ -336,6 +340,26 @@ export default function Home() {
 
   const updateDraft = <K extends keyof CharacterDraft>(key: K, value: CharacterDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const copyText = async (label: string, text: string) => {
+    if (!text.trim()) {
+      setNotice(`${label}还没有内容`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    setNotice(`${label}已复制`);
   };
 
   const withLibrary = (prompt: string) => enabledLibraryText
@@ -454,7 +478,9 @@ export default function Home() {
         ...parsed,
         source: current.source,
         background: current.background,
-        greetings: Array.isArray(parsed.greetings) && parsed.greetings.length ? parsed.greetings.slice(0, 3) : current.greetings,
+        greetings: Array.isArray(parsed.greetings) && parsed.greetings.length
+          ? parsed.greetings.filter((item): item is string => typeof item === "string")
+          : current.greetings,
       }));
       setNotice("角色卡已生成；每个部分都可以填写建议并让 AI 单独优化");
     } catch (error) {
@@ -523,7 +549,7 @@ export default function Home() {
       } else if (section === "greetings") {
         const parsed = JSON.parse(cleanJsonText(text));
         if (!Array.isArray(parsed)) throw new Error("开场白格式不正确，请重试");
-        updateDraft("greetings", parsed.filter((item): item is string => typeof item === "string").slice(0, 3));
+        updateDraft("greetings", parsed.filter((item): item is string => typeof item === "string"));
       } else if (section === "world") {
         const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
         if (!Array.isArray(parsed)) throw new Error("世界书格式不正确，请重试");
@@ -600,7 +626,7 @@ export default function Home() {
   const exportCharacter = (format: "json" | "txt") => {
     const filename = `${draft.name || "未命名角色"}_角色卡.${format}`;
     if (format === "json") {
-      saveFile(filename, JSON.stringify({ format: "mori-character-card-v1", ...draft, worldBook: entries, promptLibrary: library }, null, 2), "application/json");
+      saveFile(filename, JSON.stringify({ format: "char-character-card-v1", ...draft, worldBook: entries, promptLibrary: library }, null, 2), "application/json");
       return;
     }
     const content = [
@@ -618,7 +644,7 @@ export default function Home() {
   const exportWorld = () => {
     const worldBook = {
       name: `${draft.name || "角色"}的世界书`,
-      format: "mori-world-book-v1",
+      format: "char-world-book-v1",
       entries: entries.map((entry, index) => ({
         uid: index,
         key: entry.keys.split(/[,，、]/).map((key) => key.trim()).filter(Boolean),
@@ -668,9 +694,18 @@ export default function Home() {
     setLibrary((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
   };
 
+  const saveLibraryNow = () => {
+    try {
+      localStorage.setItem("char-prompt-library", JSON.stringify(library));
+      setNotice(`资料库已保存到本机，共 ${library.length} 条`);
+    } catch {
+      setNotice("资料库保存失败，请检查浏览器是否允许本地存储");
+    }
+  };
+
   const exportLibrary = () => {
-    saveFile("MORI_角色资料库.json", JSON.stringify({
-      format: "mori-prompt-library-v1",
+    saveFile("Char_角色资料库.json", JSON.stringify({
+      format: "char-prompt-library-v1",
       variables: { character: "{{char}}", user: "{{user}}" },
       entries: library,
     }, null, 2), "application/json");
@@ -721,9 +756,9 @@ export default function Home() {
     <div className="app-shell" data-tone={tone}>
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("character")} aria-label="返回角色卡首页">
-          <span className="brand-mark">M</span>
+          <span className="brand-mark">C</span>
           <span>
-            <b>MORI</b>
+            <b>Char</b>
             <small>角色工作室</small>
           </span>
         </button>
@@ -753,7 +788,7 @@ export default function Home() {
 
       <main className="main-stage">
         <header className="topbar">
-          <div className="mobile-brand">MORI</div>
+          <div className="mobile-brand">Char</div>
           <div className="status-pill"><span /> {notice}</div>
           <div className="top-actions">
             <label className="tone-select">
@@ -856,7 +891,10 @@ export default function Home() {
             <section className="editor-card">
               <div className="section-heading">
                 <div><span>STEP 03</span><h2>人设正文</h2></div>
-                <small>{draft.persona.length.toLocaleString()} 字符</small>
+                <div className="section-heading-actions">
+                  <small>{draft.persona.length.toLocaleString()} 字符</small>
+                  <button className="copy-button" onClick={() => copyText("人设正文", draft.persona)} disabled={!draft.persona.trim()}>复制</button>
+                </div>
               </div>
               <TextAreaField
                 label="身份、性格、心理、说话方式、关系与行为逻辑"
@@ -878,16 +916,15 @@ export default function Home() {
             <section className="editor-card">
               <div className="section-heading">
                 <div><span>STEP 04</span><h2>开场白</h2></div>
-                <button
-                  className="mini-button"
-                  onClick={() => updateDraft("greetings", [...draft.greetings, ""].slice(0, 3))}
-                  disabled={draft.greetings.length >= 3}
-                >＋ 添加情境</button>
+                <div className="section-heading-actions">
+                  <button className="copy-button" onClick={() => copyText("全部开场白", draft.greetings.filter((item) => item.trim()).map((item, index) => `开场白 ${index + 1}\n${item}`).join("\n\n"))} disabled={!draft.greetings.some((item) => item.trim())}>复制全部</button>
+                  <button className="mini-button" onClick={() => updateDraft("greetings", [...draft.greetings, ""])}>＋ 添加情境</button>
+                </div>
               </div>
               <div className="greeting-list">
                 {draft.greetings.map((greeting, index) => (
                   <div className="greeting-item" key={index}>
-                    <span>0{index + 1}</span>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
                     <textarea
                       aria-label={`开场白 ${index + 1}`}
                       rows={5}
@@ -899,9 +936,12 @@ export default function Home() {
                         updateDraft("greetings", next);
                       }}
                     />
-                    {draft.greetings.length > 1 && (
-                      <button aria-label={`删除开场白 ${index + 1}`} onClick={() => updateDraft("greetings", draft.greetings.filter((_, itemIndex) => itemIndex !== index))}>×</button>
-                    )}
+                    <div className="greeting-actions">
+                      <button className="copy-button" onClick={() => copyText(`开场白 ${index + 1}`, greeting)} disabled={!greeting.trim()}>复制</button>
+                      {draft.greetings.length > 1 && (
+                        <button className="greeting-delete" aria-label={`删除开场白 ${index + 1}`} onClick={() => updateDraft("greetings", draft.greetings.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -917,7 +957,7 @@ export default function Home() {
 
             <div className="split-editor">
               <section className="editor-card">
-                <div className="section-heading"><div><span>STEP 05</span><h2>人物小传</h2></div></div>
+                <div className="section-heading"><div><span>STEP 05</span><h2>人物小传</h2></div><button className="copy-button" onClick={() => copyText("人物小传", draft.biography)} disabled={!draft.biography.trim()}>复制</button></div>
                 <TextAreaField label="人物经历" value={draft.biography} onChange={(value) => updateDraft("biography", value)} rows={12} placeholder="按时间线整理出身、转折、关系变化与当前状态……" />
                 <RevisionPanel
                   section="人物小传"
@@ -929,7 +969,7 @@ export default function Home() {
                 />
               </section>
               <section className="editor-card">
-                <div className="section-heading"><div><span>STEP 06</span><h2>生图外貌</h2></div></div>
+                <div className="section-heading"><div><span>STEP 06</span><h2>生图外貌</h2></div><button className="copy-button" onClick={() => copyText("生图外貌", draft.appearance)} disabled={!draft.appearance.trim()}>复制</button></div>
                 <TextAreaField label="可视觉化设定" value={draft.appearance} onChange={(value) => updateDraft("appearance", value)} rows={12} placeholder="外观年龄、体型、五官、发型、服饰、辨识特征与神态……" />
                 <RevisionPanel
                   section="生图外貌"
@@ -943,7 +983,7 @@ export default function Home() {
             </div>
 
             <section className="editor-card">
-              <div className="section-heading"><div><span>STEP 07</span><h2>缺失信息与设定冲突</h2></div><small>不会擅自替你决定冲突版本</small></div>
+              <div className="section-heading"><div><span>STEP 07</span><h2>缺失信息与设定冲突</h2></div><div className="section-heading-actions"><small>不会擅自替你决定冲突版本</small><button className="copy-button" onClick={() => copyText("缺失信息与设定冲突", draft.conflicts)} disabled={!draft.conflicts.trim()}>复制</button></div></div>
               <TextAreaField label="待确认事项" value={draft.conflicts} onChange={(value) => updateDraft("conflicts", value)} rows={5} placeholder="原文未提供的信息，以及互相矛盾的设定会列在这里……" />
               <RevisionPanel
                 section="冲突与缺失信息"
@@ -965,17 +1005,18 @@ export default function Home() {
         {view === "library" && (
           <div className="page-wrap library-page">
             <section className="page-intro">
-              <div><span className="eyebrow">CREATIVE LIBRARY · 创作资料库</span><h1>把长期要求，交给 AI 一直记住。</h1><p>保存人设要求、其他世界书、互动规则与禁用项。启用的条目会自动加入角色生成、世界书生成和分区优化。</p></div>
+              <div><span className="eyebrow">CREATIVE LIBRARY · 创作资料库</span><h1>把长期要求，交给 AI 一直记住。</h1><p>修改会自动保存在当前设备，也可以点击“保存到本机”立即确认。启用的条目会自动加入角色生成、世界书生成和分区优化。</p></div>
               <div className="page-intro-actions">
                 <label className="file-button">导入资料<input type="file" accept=".json,.txt,.md,application/json,text/plain" onChange={importLibrary} /></label>
                 <button className="quiet-button" onClick={exportLibrary} disabled={!library.length}>导出</button>
+                <button className="quiet-button" onClick={saveLibraryNow}>保存到本机</button>
                 <button className="primary-button compact" onClick={() => addLibraryEntry()}>＋ 新建</button>
               </div>
             </section>
 
             <section className="variable-guide">
-              <div><span>CHARACTER</span><code>{"{{char}}"}</code><p>代表当前正在塑造或扮演的角色。</p></div>
-              <div><span>USER</span><code>{"{{user}}"}</code><p>代表与角色对话的用户，不替用户决定言行和心理。</p></div>
+              <div><span>CHAR</span><code>{"{{char}}"}</code><p>默认角色名变量，代表当前正在塑造或扮演的角色。</p></div>
+              <div><span>USER</span><code>{"{{user}}"}</code><p>默认用户变量，代表与角色对话的用户，不替用户决定言行和心理。</p></div>
               <div className="library-summary"><b>{library.filter((item) => item.enabled && item.content.trim()).length}</b><span>条资料正在参与 AI 生成</span></div>
             </section>
 

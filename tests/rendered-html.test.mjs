@@ -14,13 +14,13 @@ async function render(path = "/") {
   );
 }
 
-test("server-renders the MORI workspace", async () => {
+test("server-renders the Char workspace", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /MORI/);
+  assert.match(html, /Char/);
   assert.match(html, /角色工作室/);
   assert.match(html, /manifest\.webmanifest/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
@@ -33,9 +33,9 @@ test("ships installable app assets and removes the starter preview", async () =>
   ]);
 
   const parsed = JSON.parse(manifest);
-  assert.equal(parsed.name, "MORI 角色工作室");
+  assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /mori-shell-v1/);
+  assert.match(serviceWorker, /char-shell-v2/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

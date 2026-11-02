@@ -1,6 +1,6 @@
 {
-  "name": "MORI 角色工作室",
-  "short_name": "MORI",
+  "name": "Char 角色工作室",
+  "short_name": "Char",
   "description": "AI 角色卡整理、世界书生成与多 API 预设连接。",
   "start_url": "/",
   "scope": "/",
