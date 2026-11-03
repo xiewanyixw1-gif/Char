@@ -118,6 +118,12 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /设为卡片背景/);
   assert.match(page, /loadImageModels/);
   assert.match(page, /生图模型列表地址/);
+  assert.match(page, /GPT_IMAGE_SIZES/);
+  assert.match(page, /NAI_IMAGE_SIZES/);
+  assert.match(page, /832x1216/);
+  assert.match(page, /1472x1472/);
+  assert.match(page, /自定义图片尺寸/);
+  assert.match(page, /选择本次生成尺寸/);
   assert.match(imageRoute, /images\/generations/);
   assert.match(imageRoute, /normalizedModelsEndpoint/);
   assert.match(imageRoute, /无法拉取生图模型/);
@@ -135,6 +141,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v9/);
+  assert.match(serviceWorker, /char-shell-v10/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

@@ -171,6 +171,26 @@ const DEFAULT_IMAGE_API: ImagePreset = {
   style: "",
 };
 
+const GPT_IMAGE_SIZES = [
+  { value: "auto", label: "自动尺寸（GPT 推荐）" },
+  { value: "1024x1024", label: "1024 × 1024 · 方形" },
+  { value: "1024x1536", label: "1024 × 1536 · 竖版" },
+  { value: "1536x1024", label: "1536 × 1024 · 横版" },
+  { value: "1024x1792", label: "1024 × 1792 · DALL·E 竖版" },
+  { value: "1792x1024", label: "1792 × 1024 · DALL·E 横版" },
+] as const;
+
+const NAI_IMAGE_SIZES = [
+  { value: "832x1216", label: "832 × 1216 · NAI 常用竖版" },
+  { value: "1216x832", label: "1216 × 832 · NAI 常用横版" },
+  { value: "1024x1024", label: "1024 × 1024 · NAI 方形" },
+  { value: "1024x1536", label: "1024 × 1536 · NAI 大竖版" },
+  { value: "1536x1024", label: "1536 × 1024 · NAI 大横版" },
+  { value: "1472x1472", label: "1472 × 1472 · NAI 大方形" },
+] as const;
+
+const IMAGE_SIZE_VALUES: ReadonlySet<string> = new Set([...GPT_IMAGE_SIZES, ...NAI_IMAGE_SIZES].map((item) => item.value));
+
 const DEFAULT_LIBRARY: LibraryEntry[] = [
   {
     id: "char-variable-convention",
@@ -2518,6 +2538,7 @@ export default function Home() {
                 <TextAreaField label="负面提示词" value={negativePrompt} onChange={setNegativePrompt} rows={10} placeholder="不希望出现的元素，如文字、水印、错误肢体……" />
               </div>
               <div className="inline-actions image-generate-actions">
+                <label className="image-quick-size"><span>生成尺寸</span><select aria-label="选择本次生成尺寸" value={IMAGE_SIZE_VALUES.has(imageApi.size) ? imageApi.size : "custom"} onChange={(event) => event.target.value !== "custom" && setImageApi((current) => ({ ...current, size: event.target.value }))}><optgroup label="GPT 图片尺寸">{GPT_IMAGE_SIZES.map((size) => <option key={`studio-gpt-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><optgroup label="NAI 图片尺寸">{NAI_IMAGE_SIZES.map((size) => <option key={`studio-nai-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><option value="custom">自定义：{imageApi.size || "未填写"}</option></select></label>
                 <button className="quiet-button" onClick={fillCharacterImagePrompt}>重新读取角色资料</button>
                 <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? "生成中…" : "生成角色图片"}<span>→</span></button>
               </div>
@@ -2663,7 +2684,18 @@ export default function Home() {
                     </div>
                     <small className="field-helper">{imageModelOptions.length > 0 ? `列表中共有 ${imageModelOptions.length} 个模型；请选择支持图片生成的模型。` : "从生图站点拉取模型，也可以直接手动填写模型 ID。"}</small>
                   </label>
-                  <Field label="图片尺寸" value={imageApi.size} onChange={(value) => setImageApi((current) => ({ ...current, size: value }))} placeholder="1024x1024" />
+                  <label className="field">
+                    <span className="field-label">图片尺寸 <i>GPT / NAI</i></span>
+                    <div className="image-size-picker">
+                      <select aria-label="选择 GPT 或 NAI 图片尺寸" value={IMAGE_SIZE_VALUES.has(imageApi.size) ? imageApi.size : "custom"} onChange={(event) => event.target.value !== "custom" && setImageApi((current) => ({ ...current, size: event.target.value }))}>
+                        <optgroup label="GPT 图片尺寸">{GPT_IMAGE_SIZES.map((size) => <option key={`gpt-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup>
+                        <optgroup label="NAI 图片尺寸">{NAI_IMAGE_SIZES.map((size) => <option key={`nai-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup>
+                        <option value="custom">自定义尺寸</option>
+                      </select>
+                      <input aria-label="自定义图片尺寸" value={imageApi.size} onChange={(event) => setImageApi((current) => ({ ...current, size: event.target.value }))} placeholder="宽x高，如 832x1216" />
+                    </div>
+                    <small className="field-helper">选择预设后仍可手动修改；NAI 中转站需要支持 size 字符串参数。</small>
+                  </label>
                   <Field label="质量参数" value={imageApi.quality} onChange={(value) => setImageApi((current) => ({ ...current, quality: value }))} placeholder="auto / standard / hd" />
                   <label className="field field-wide"><span className="field-label">生图 API Endpoint <i>必填</i></span><input value={imageApi.endpoint} onChange={(event) => { setImageApi((current) => ({ ...current, endpoint: event.target.value, models: [] })); setImageModelOptions([]); }} placeholder="https://站点地址/v1 或 /v1/images/generations" /><small className="field-helper">可填写站点根地址、/v1，或完整的 /images/generations 地址。</small></label>
                   <label className="field field-wide"><span className="field-label">生图模型列表地址 <i>可选</i></span><input value={imageApi.modelsEndpoint} onChange={(event) => setImageApi((current) => ({ ...current, modelsEndpoint: event.target.value }))} placeholder="留空时根据生图 Endpoint 自动推导 /models" /><small className="field-helper">站点使用特殊模型列表路径时填写；一般可以留空。</small></label>
