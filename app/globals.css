@@ -362,6 +362,11 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
 .split-editor .revision-panel > button { justify-content: space-between; }
 
 .greeting-list { display: grid; gap: 12px; }
+.relationship-premise { margin-bottom: 18px; padding: 16px; border: 1px solid #d9ddda; border-radius: 11px; background: #f7f8f7; }
+.relationship-premise-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.relationship-premise-heading span { color: #929694; font-size: 8px; font-weight: 750; letter-spacing: 0.14em; }
+.relationship-premise-heading b { color: #686d69; font-size: 9px; font-weight: 500; text-align: right; }
+.relationship-premise-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .greeting-item { display: grid; grid-template-columns: 35px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
 .greeting-item > span { padding-top: 12px; font-family: Georgia, serif; font-size: 11px; font-style: italic; color: #929593; cursor: grab; }
 .greeting-item.dragging { opacity: 0.48; }
@@ -622,7 +627,7 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
   .hero h1 { font-size: clamp(34px, 11vw, 42px); overflow-wrap: anywhere; }
   .hero-card { min-height: 205px; }
   .profile-orbit { width: 100px; height: 100px; }
-  .dual-textareas, .split-editor, .field-grid, .preset-grid, .saved-api-grid, .api-help, .api-preset-switcher, .character-shelf, .world-book-shelf { grid-template-columns: minmax(0, 1fr); }
+  .dual-textareas, .split-editor, .field-grid, .relationship-premise-grid, .preset-grid, .saved-api-grid, .api-help, .api-preset-switcher, .character-shelf, .world-book-shelf { grid-template-columns: minmax(0, 1fr); }
   input, textarea, select { min-width: 0; max-width: 100%; font-size: 16px !important; }
   button, .file-button { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
   textarea { resize: vertical; }
@@ -632,6 +637,9 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 10px; margin-bottom: 20px; }
   .section-heading > small { display: none; }
   .section-heading-actions { flex-wrap: wrap; }
+  .relationship-premise { padding: 14px; }
+  .relationship-premise-heading { align-items: flex-start; flex-direction: column; }
+  .relationship-premise-heading b { text-align: left; line-height: 1.6; }
   .greeting-type-row { align-items: stretch; flex-direction: column; }
   .greeting-type-row label { justify-content: space-between; }
   .greeting-type-row select { flex: 1; }

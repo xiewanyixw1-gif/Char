@@ -22,6 +22,9 @@ type CharacterDraft = {
   suffix: string;
   language: string;
   persona: string;
+  userRelationship: string;
+  relationshipStage: string;
+  connectionReason: string;
   greetings: string[];
   greetingModes: GreetingMode[];
   biography: string;
@@ -115,6 +118,9 @@ const EMPTY_DRAFT: CharacterDraft = {
   suffix: "",
   language: "中文",
   persona: "",
+  userRelationship: "",
+  relationshipStage: "",
+  connectionReason: "",
   greetings: [""],
   greetingModes: ["offline"],
   biography: "",
@@ -149,6 +155,30 @@ const DEFAULT_LIBRARY: LibraryEntry[] = [
     title: "立体人设与生活细节",
     category: "人设要求",
     content: "人设正文必须写清身份、性格形成原因、欲望、恐惧、缺点、边界、行为逻辑、语言习惯、亲密关系模式，以及日常作息、饮食与穿衣习惯、喜恶、擅长与不擅长。至少加入一个有依据的人物反差点，避免完美化、标签堆砌和空泛形容。",
+    enabled: true,
+    builtIn: true,
+  },
+  {
+    id: "char-persona-reference-template",
+    title: "完整人设正文结构",
+    category: "人设要求",
+    content: "人设正文参考以下结构自然组织，不要只堆标签：人物核心本质；身份与生活基础（职业、住所、教育、成长环境）；外在给人的第一印象；内在特质（表面与真实、欲望、恐惧、缺点、边界、价值观）；兴趣、喜恶、健康、习惯与绝不会做的事；情感观、过往经历、称呼与关系递进方式；重要人际关系；成长阶段中塑造性格的关键事件；开心、生气、失落、害羞与动情时各自不同的微表情、动作和说话反应。外貌细节集中写入生图外貌，不在日常互动中反复复述；亲密或成人设定只有用户明确要求且角色均为成年人时才补充。",
+    enabled: true,
+    builtIn: true,
+  },
+  {
+    id: "char-user-relationship-premise",
+    title: "User 关系阶段与交集前提",
+    category: "互动规则",
+    content: "生成开场白前必须先确定三项前提：角色与 {{user}} 当前是什么关系；双方正处于陌生、初识、熟悉、朋友、暧昧、交往、婚后或其他哪个具体阶段；双方最初因何产生交集、为什么至今仍保持联系。交集原因必须符合时代、城市、学校、家庭、职业和人物经历，不能为了开场强行偶遇。每条线上或线下开场都必须遵守同一关系前提、称呼、情感距离与已知信息，不得突然越级亲密或假定 {{user}} 已做出未写明的行为。",
+    enabled: true,
+    builtIn: true,
+  },
+  {
+    id: "char-roleplay-behavior-reference",
+    title: "自然扮演与叙事边界",
+    category: "互动规则",
+    content: "默认使用第三人称描写角色的语言、动作、表情与合理心理，只写角色能够看见、听见或根据已知事实判断的信息。不得预设 {{user}} 的动作、心理、身体反应、台词或过去；双方人格平等，避免说教、掌控、物化、神化和极端自卑。情绪与关系按已有互动逐步变化，不机械推进告白或亲密行为。语言符合身份背景并保持自然口语，动作具体克制，允许静止和留白，避免重复小动作、油腻套话和空泛意象。",
     enabled: true,
     builtIn: true,
   },
@@ -810,6 +840,9 @@ export default function Home() {
             name: typeof cardData.name === "string" ? cardData.name : rawDraft.name || `导入角色 ${characters.length + imported.length + index + 1}`,
             persona: typeof cardData.description === "string" ? cardData.description : rawDraft.persona || "",
             background: typeof cardData.scenario === "string" ? cardData.scenario : rawDraft.background || "",
+            userRelationship: rawDraft.userRelationship || (cardData.extensions as { char?: { userRelationship?: string } } | undefined)?.char?.userRelationship || "",
+            relationshipStage: rawDraft.relationshipStage || (cardData.extensions as { char?: { relationshipStage?: string } } | undefined)?.char?.relationshipStage || "",
+            connectionReason: rawDraft.connectionReason || (cardData.extensions as { char?: { connectionReason?: string } } | undefined)?.char?.connectionReason || "",
             greetings: importedGreetings,
             greetingModes: alignGreetingModes(importedGreetings, rawDraft.greetingModes ?? (cardData.extensions as { char?: { greetingModes?: unknown } } | undefined)?.char?.greetingModes),
           };
@@ -1046,8 +1079,8 @@ export default function Home() {
       const text = await callModel(
         generationMode === "create" ? "character-create" : "character-extract",
         withLibrary(generationMode === "create"
-          ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}`
-          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`),
+          ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`
+          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`),
       );
       const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] };
       pushUndo("生成完整角色卡");
@@ -1099,7 +1132,13 @@ export default function Home() {
         language: draft.language,
       },
       persona: draft.persona,
-      greetings: { greetings: draft.greetings, greetingModes: draft.greetingModes },
+      greetings: {
+        userRelationship: draft.userRelationship,
+        relationshipStage: draft.relationshipStage,
+        connectionReason: draft.connectionReason,
+        greetings: draft.greetings,
+        greetingModes: draft.greetingModes,
+      },
       biography: draft.biography,
       appearance: draft.appearance,
       world: entries,
@@ -1273,7 +1312,7 @@ export default function Home() {
     try {
       const text = await callModel(
         "revise",
-        withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前仅这一条开场白】\n${JSON.stringify({ greetings: [draft.greetings[index]], greetingModes: [draft.greetingModes[index] || inferGreetingMode(draft.greetings[index])] })}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，保留“${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(draft.greetings[index]))}”类型，并仅返回包含 greetings 与 greetingModes 的 JSON 对象。`),
+        withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【与 User 的关系前提】\n当前关系：${draft.userRelationship || "未明确"}\n关系阶段：${draft.relationshipStage || "未明确"}\n交集与持续联系原因：${draft.connectionReason || "未明确"}\n\n【当前仅这一条开场白】\n${JSON.stringify({ greetings: [draft.greetings[index]], greetingModes: [draft.greetingModes[index] || inferGreetingMode(draft.greetings[index])] })}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，必须符合现有关系阶段与交集原因，保留“${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(draft.greetings[index]))}”类型，并仅返回包含 greetings 与 greetingModes 的 JSON 对象。`),
         "greetings",
       );
       const parsed = JSON.parse(cleanJsonText(text)) as { greetings?: unknown } | unknown[];
@@ -1392,17 +1431,19 @@ export default function Home() {
   const characterText = () => [
     `【01 基础信息】\n名字：${draft.name || "未提供"}\n性别：${draft.gender || "未提供"}\n备注：${draft.note || "未提供"}\n网名：${draft.nickname || "未提供"}\n签名：${draft.signature || "未提供"}\n年龄：${draft.age || "未提供"}\n被拍后缀：${draft.suffix || "未提供"}\n文化母语：${draft.language || "未提供"}`,
     `【02 人设正文】\n${draft.persona || "未提供"}`,
-    `【03 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n${item || "未提供"}`).join("\n\n")}`,
-    `【04 人物小传】\n${draft.biography || "未提供"}`,
-    `【05 生图外貌】\n${draft.appearance || "未提供"}`,
-    `【06 世界书】\n${entries.map((item) => `${item.title}｜${item.keys}\n${item.content}`).join("\n\n") || "未提供"}`,
-    `【07 缺失信息与设定冲突】\n${draft.conflicts || "未提供"}`,
+    `【03 User 关系前提】\n当前关系：${draft.userRelationship || "未提供"}\n关系阶段：${draft.relationshipStage || "未提供"}\n产生并持续交集的原因：${draft.connectionReason || "未提供"}`,
+    `【04 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n${item || "未提供"}`).join("\n\n")}`,
+    `【05 人物小传】\n${draft.biography || "未提供"}`,
+    `【06 生图外貌】\n${draft.appearance || "未提供"}`,
+    `【07 世界书】\n${entries.map((item) => `${item.title}｜${item.keys}\n${item.content}`).join("\n\n") || "未提供"}`,
+    `【08 缺失信息与设定冲突】\n${draft.conflicts || "未提供"}`,
   ].join("\n\n");
 
   const characterMarkdown = () => [
     `# ${draft.name || "char"}`,
     `## 基础信息\n\n- 性别：${draft.gender || "未提供"}\n- 年龄：${draft.age || "未提供"}\n- 网名：${draft.nickname || "未提供"}\n- 签名：${draft.signature || "未提供"}\n- 被拍后缀：${draft.suffix || "未提供"}\n- 文化母语：${draft.language || "未提供"}\n- 备注：${draft.note || "未提供"}`,
     `## 人设正文\n\n${draft.persona || "未提供"}`,
+    `## User 关系前提\n\n- 当前关系：${draft.userRelationship || "未提供"}\n- 关系阶段：${draft.relationshipStage || "未提供"}\n- 产生并持续交集的原因：${draft.connectionReason || "未提供"}`,
     `## 开场白\n\n${draft.greetings.map((item, index) => `### 开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n\n${item || "未提供"}`).join("\n\n")}`,
     `## 人物小传\n\n${draft.biography || "未提供"}`,
     `## 生图外貌\n\n${draft.appearance || "未提供"}`,
@@ -1428,7 +1469,7 @@ export default function Home() {
           name: draft.name || "char",
           description: draft.persona,
           personality: draft.persona,
-          scenario: draft.background,
+          scenario: [draft.background, draft.userRelationship && `与 {{user}} 的当前关系：${draft.userRelationship}`, draft.relationshipStage && `关系阶段：${draft.relationshipStage}`, draft.connectionReason && `产生并持续交集的原因：${draft.connectionReason}`].filter(Boolean).join("\n"),
           first_mes: draft.greetings[0] || "",
           mes_example: "",
           creator_notes: [draft.note, draft.biography && `人物小传：\n${draft.biography}`, draft.appearance && `生图外貌：\n${draft.appearance}`].filter(Boolean).join("\n\n"),
@@ -1438,7 +1479,7 @@ export default function Home() {
           tags: [],
           creator: "Char",
           character_version: "1.0",
-          extensions: { char: { conflicts: draft.conflicts, worldBook: entries, greetingModes: draft.greetingModes } },
+          extensions: { char: { conflicts: draft.conflicts, worldBook: entries, greetingModes: draft.greetingModes, userRelationship: draft.userRelationship, relationshipStage: draft.relationshipStage, connectionReason: draft.connectionReason } },
         },
       };
       saveFile(`${draft.name || "char"}_SillyTavern_V2.json`, JSON.stringify(card, null, 2), "application/json");
@@ -1932,6 +1973,17 @@ export default function Home() {
                   <button className="copy-button" onClick={() => copyText("全部开场白", draft.greetings.map((item, index) => item.trim() ? `开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n${item}` : "").filter(Boolean).join("\n\n"))} disabled={!draft.greetings.some((item) => item.trim())}>复制全部</button>
                   <button className="mini-button" onClick={() => addGreeting("online")}>＋ 线上开场</button>
                   <button className="mini-button" onClick={() => addGreeting("offline")}>＋ 线下开场</button>
+                </div>
+              </div>
+              <div className="relationship-premise">
+                <div className="relationship-premise-heading">
+                  <span>USER RELATIONSHIP PREMISE</span>
+                  <b>先确定双方如何认识、目前是什么关系，再生成开场</b>
+                </div>
+                <div className="relationship-premise-grid">
+                  <Field label="与 User 的当前关系" value={draft.userRelationship} onChange={(value) => updateDraft("userRelationship", value)} placeholder="如：同班同学、旧友、同事、恋人" />
+                  <Field label="目前关系阶段" value={draft.relationshipStage} onChange={(value) => updateDraft("relationshipStage", value)} placeholder="如：初识、熟悉、暧昧期、交往中" />
+                  <Field label="产生并持续交集的原因" value={draft.connectionReason} onChange={(value) => updateDraft("connectionReason", value)} placeholder="如：社团合作后保持联系，经常一起完成项目" />
                 </div>
               </div>
               <div className="greeting-list">
