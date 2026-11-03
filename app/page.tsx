@@ -4,7 +4,7 @@
 
 import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useState } from "react";
 
-type View = "archive" | "character" | "library" | "world" | "api";
+type View = "archive" | "character" | "library" | "world" | "image" | "api";
 type Tone = "mist" | "warm" | "paper";
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
@@ -65,6 +65,22 @@ type ApiPreset = {
   models: string[];
   apiKey: string;
   temperature: number;
+};
+
+type ImagePreset = {
+  id?: string;
+  name: string;
+  endpoint: string;
+  model: string;
+  apiKey: string;
+  size: string;
+  quality: string;
+  style: string;
+};
+
+type GeneratedImage = {
+  imageUrl: string;
+  revisedPrompt?: string;
 };
 
 type WorldBookRecord = {
@@ -139,6 +155,16 @@ const DEFAULT_API: ApiPreset = {
   models: [],
   apiKey: "",
   temperature: 0.7,
+};
+
+const DEFAULT_IMAGE_API: ImagePreset = {
+  name: "OpenAI Images",
+  endpoint: "https://api.openai.com/v1/images/generations",
+  model: "gpt-image-1",
+  apiKey: "",
+  size: "1024x1024",
+  quality: "auto",
+  style: "",
 };
 
 const DEFAULT_LIBRARY: LibraryEntry[] = [
@@ -262,7 +288,8 @@ const NAV_ITEMS: Array<{ id: View; label: string; note: string; mark: string }> 
   { id: "character", label: "角色卡", note: "整理与生成", mark: "02" },
   { id: "library", label: "知识库", note: "长期提示与知识", mark: "03" },
   { id: "world", label: "世界书", note: "书架与设定", mark: "04" },
-  { id: "api", label: "API", note: "模型连接", mark: "05" },
+  { id: "image", label: "生图室", note: "角色形象生成", mark: "05" },
+  { id: "api", label: "API", note: "文本模型连接", mark: "06" },
 ];
 
 function uid() {
@@ -449,6 +476,12 @@ export default function Home() {
   const [libraryCategory, setLibraryCategory] = useState<LibraryCategory | "全部">("全部");
   const [api, setApi] = useState<ApiPreset>(DEFAULT_API);
   const [savedApis, setSavedApis] = useState<ApiPreset[]>([]);
+  const [imageApi, setImageApi] = useState<ImagePreset>(DEFAULT_IMAGE_API);
+  const [savedImageApis, setSavedImageApis] = useState<ImagePreset[]>([]);
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [negativePrompt, setNegativePrompt] = useState("文字、水印、Logo、低清晰度、畸形手部、重复肢体");
+  const [generatedImage, setGeneratedImage] = useState<GeneratedImage | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [busy, setBusy] = useState<"character" | "world" | "check" | "test" | null>(null);
@@ -483,6 +516,8 @@ export default function Home() {
       const storedLibrary = localStorage.getItem("char-prompt-library");
       const storedApi = localStorage.getItem("char-api-preset");
       const storedSavedApis = localStorage.getItem("char-custom-api-presets");
+      const storedImageApi = localStorage.getItem("char-image-api-preset");
+      const storedSavedImageApis = localStorage.getItem("char-image-api-presets");
       const storedTone = localStorage.getItem("char-tone") as Tone | null;
       const storedMode = localStorage.getItem("char-generation-mode") as GenerationMode | null;
       const storedBackgroundImage = localStorage.getItem("char-background-image");
@@ -546,6 +581,11 @@ export default function Home() {
         const restoredApis = JSON.parse(storedSavedApis) as ApiPreset[];
         setSavedApis(Array.isArray(restoredApis) ? restoredApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [] })) : []);
       }
+      if (storedImageApi) setImageApi({ ...DEFAULT_IMAGE_API, ...JSON.parse(storedImageApi) } as ImagePreset);
+      if (storedSavedImageApis) {
+        const restoredImageApis = JSON.parse(storedSavedImageApis) as ImagePreset[];
+        setSavedImageApis(Array.isArray(restoredImageApis) ? restoredImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item })) : []);
+      }
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
       if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
       if (storedBackgroundImage) setBackgroundImage(storedBackgroundImage);
@@ -587,10 +627,18 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
+    setGeneratedImage(null);
+    setImagePrompt("");
+  }, [activeCharacterId, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
     try {
       localStorage.setItem("char-prompt-library", JSON.stringify(library));
       localStorage.setItem("char-api-preset", JSON.stringify(api));
       localStorage.setItem("char-custom-api-presets", JSON.stringify(savedApis));
+      localStorage.setItem("char-image-api-preset", JSON.stringify(imageApi));
+      localStorage.setItem("char-image-api-presets", JSON.stringify(savedImageApis));
       localStorage.setItem("char-tone", tone);
       localStorage.setItem("char-generation-mode", generationMode);
       if (backgroundImage) localStorage.setItem("char-background-image", backgroundImage);
@@ -598,7 +646,7 @@ export default function Home() {
     } catch {
       setNotice("设置保存失败，请检查浏览器存储空间");
     }
-  }, [api, backgroundImage, generationMode, library, ready, savedApis, tone]);
+  }, [api, backgroundImage, generationMode, imageApi, library, ready, savedApis, savedImageApis, tone]);
 
   useEffect(() => {
     if (!ready || !api.id) return;
@@ -881,6 +929,8 @@ export default function Home() {
   const exportWorkspace = () => {
     const safeApi = { ...api, apiKey: "" };
     const safeSavedApis = savedApis.map((item) => ({ ...item, apiKey: "" }));
+    const safeImageApi = { ...imageApi, apiKey: "" };
+    const safeSavedImageApis = savedImageApis.map((item) => ({ ...item, apiKey: "" }));
     saveFile("Char_完整备份.json", JSON.stringify({
       format: "char-workspace-backup-v1",
       exportedAt: new Date().toISOString(),
@@ -889,6 +939,8 @@ export default function Home() {
       library,
       api: safeApi,
       savedApis: safeSavedApis,
+      imageApi: safeImageApi,
+      savedImageApis: safeSavedImageApis,
       tone,
       generationMode,
     }, null, 2), "application/json");
@@ -906,6 +958,8 @@ export default function Home() {
         library: LibraryEntry[];
         api: ApiPreset;
         savedApis: ApiPreset[];
+        imageApi: ImagePreset;
+        savedImageApis: ImagePreset[];
         tone: Tone;
         generationMode: GenerationMode;
       }>;
@@ -948,6 +1002,8 @@ export default function Home() {
         setModelOptions(restoredApi.models);
       }
       if (Array.isArray(payload.savedApis)) setSavedApis(payload.savedApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [], apiKey: "" })));
+      if (payload.imageApi) setImageApi({ ...DEFAULT_IMAGE_API, ...payload.imageApi, apiKey: "" });
+      if (Array.isArray(payload.savedImageApis)) setSavedImageApis(payload.savedImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item, apiKey: "" })));
       if (payload.tone) setTone(payload.tone);
       if (payload.generationMode) setGenerationMode(payload.generationMode);
       setUndoStack([]);
@@ -1021,6 +1077,93 @@ export default function Home() {
       setSavedApis((current) => current.map((item) => item.id === currentId ? { ...item, apiKey: "" } : item));
     }
     setNotice("API Key 已从当前预设和本机记录中清除");
+  };
+
+  const chooseSavedImageApi = (preset: ImagePreset) => {
+    setImageApi({ ...DEFAULT_IMAGE_API, ...preset });
+    setNotice(`已切换到生图预设“${preset.name}”`);
+  };
+
+  const startNewImageApiPreset = () => {
+    setImageApi({ ...DEFAULT_IMAGE_API, id: undefined, name: `生图站点 ${savedImageApis.length + 1}`, endpoint: "https://your-image-api.example.com/v1/images/generations", model: "your-image-model", apiKey: "" });
+    setNotice("已新建生图 API 预设，请填写接口信息后保存");
+  };
+
+  const saveCurrentImageApi = (saveAsNew = false) => {
+    if (!imageApi.name.trim() || !imageApi.endpoint.trim() || !imageApi.model.trim()) {
+      setNotice("请填写生图预设名称、接口地址和模型名称");
+      return;
+    }
+    const saved: ImagePreset = {
+      ...imageApi,
+      id: saveAsNew || !imageApi.id ? uid() : imageApi.id,
+      name: saveAsNew ? `${imageApi.name} 副本` : imageApi.name,
+    };
+    setSavedImageApis((current) => current.some((item) => item.id === saved.id)
+      ? current.map((item) => item.id === saved.id ? saved : item)
+      : [...current, saved]);
+    setImageApi(saved);
+    setNotice(`已保存并启用生图预设“${saved.name}”`);
+  };
+
+  const removeSavedImageApi = (id: string) => {
+    setSavedImageApis((current) => current.filter((item) => item.id !== id));
+    if (imageApi.id === id) setImageApi({ ...DEFAULT_IMAGE_API });
+    setNotice("已删除该生图 API 预设");
+  };
+
+  const clearImageApiKey = () => {
+    const currentId = imageApi.id;
+    setImageApi((current) => ({ ...current, apiKey: "" }));
+    if (currentId) setSavedImageApis((current) => current.map((item) => item.id === currentId ? { ...item, apiKey: "" } : item));
+    setNotice("生图 API Key 已从当前预设和本机记录中清除");
+  };
+
+  const fillCharacterImagePrompt = () => {
+    const parts = [
+      `角色：${draft.name || "未命名角色"}`,
+      draft.appearance && `外貌设定：${draft.appearance}`,
+      draft.persona && `气质与神态参考：${draft.persona.slice(0, 1200)}`,
+      draft.background && `背景参考：${draft.background}`,
+      "画面要求：完整遵守角色外貌，人物主体清晰，构图自然，白灰韩系质感，细节丰富，不添加文字。",
+    ].filter(Boolean);
+    setImagePrompt(parts.join("\n\n"));
+    setNotice(`已读取“${draft.name || "当前角色"}”的外貌与人设，可继续修改提示词`);
+  };
+
+  const generateRoleImage = async () => {
+    if (!imagePrompt.trim()) {
+      setNotice("请先从角色资料填充或手动填写生图提示词");
+      return;
+    }
+    if (!imageApi.endpoint.trim() || !imageApi.model.trim() || !imageApi.apiKey.trim()) {
+      setNotice("请完整填写生图接口地址、模型名称和 API Key");
+      return;
+    }
+    setImageBusy(true);
+    setNotice(`正在为“${draft.name || "当前角色"}”生成图片…`);
+    try {
+      const response = await fetch("/api/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: imagePrompt, negativePrompt, preset: imageApi }),
+      });
+      const payload = await response.json() as GeneratedImage & { error?: string };
+      if (!response.ok || !payload.imageUrl) throw new Error(payload.error || "生图接口没有返回图片");
+      setGeneratedImage({ imageUrl: payload.imageUrl, revisedPrompt: payload.revisedPrompt });
+      setNotice(`“${draft.name || "当前角色"}”的图片已生成`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "角色图片生成失败");
+    } finally {
+      setImageBusy(false);
+    }
+  };
+
+  const applyGeneratedImage = (target: "avatar" | "cover") => {
+    if (!generatedImage?.imageUrl) return;
+    if (target === "avatar") setCharacterAvatar(generatedImage.imageUrl);
+    else setCharacterCover(generatedImage.imageUrl);
+    setNotice(`已将生成图片设为“${draft.name || "当前角色"}”的${target === "avatar" ? "头像" : "卡片背景"}`);
   };
 
   const loadModels = async () => {
@@ -2254,6 +2397,82 @@ export default function Home() {
                   </div>
                 </article>
               ))}
+            </section>
+          </div>
+        )}
+
+        {view === "image" && (
+          <div className="page-wrap image-page">
+            <section className="page-intro">
+              <div><span className="eyebrow">CHARACTER IMAGE STUDIO · 角色生图室</span><h1>让每个角色拥有自己的形象。</h1><p>读取当前角色的生图外貌、人设气质与背景，连接独立的 OpenAI Images 兼容接口生成图片。生图预设与文本 API 完全分开保存。</p></div>
+              <div className={`connection-badge ${imageApi.apiKey ? "ready" : ""}`}><span />{imageApi.apiKey ? "生图接口已配置" : "等待配置生图接口"}</div>
+            </section>
+
+            <section className="image-studio-grid">
+              <article className="image-character-context" style={characterCover ? { backgroundImage: `linear-gradient(rgba(27,30,28,.68), rgba(27,30,28,.84)), url(${JSON.stringify(characterCover)})` } : undefined}>
+                <div className="image-character-avatar">{characterAvatar ? <img src={characterAvatar} alt={`${draft.name || "角色"}头像`} /> : <span>{(draft.name || "C").slice(0, 1)}</span>}</div>
+                <span>CURRENT CHARACTER</span>
+                <h2>{draft.name || "未命名角色"}</h2>
+                <p>{draft.appearance || "还没有生图外貌描述，可先回到角色卡填写或直接手写提示词。"}</p>
+                <button className="secondary-button" onClick={fillCharacterImagePrompt}>从角色资料填充提示词</button>
+              </article>
+
+              <article className="image-result-card">
+                {generatedImage ? (
+                  <img src={generatedImage.imageUrl} alt={`${draft.name || "角色"}生成图`} />
+                ) : (
+                  <div className="image-result-empty"><span>IMAGE</span><b>生成结果会显示在这里</b><small>支持接口返回 URL 或 base64 图片</small></div>
+                )}
+                {generatedImage && (
+                  <div className="image-result-actions">
+                    <button onClick={() => applyGeneratedImage("avatar")}>设为头像</button>
+                    <button onClick={() => applyGeneratedImage("cover")}>设为卡片背景</button>
+                    <a href={generatedImage.imageUrl} target="_blank" rel="noreferrer">打开原图</a>
+                  </div>
+                )}
+              </article>
+            </section>
+
+            <section className="editor-card image-prompt-card">
+              <div className="section-heading"><div><span>IMAGE PROMPT</span><h2>为 {draft.name || "当前角色"} 生成图片</h2></div><small>提示词可以继续手动修改</small></div>
+              <div className="dual-textareas">
+                <TextAreaField label="生图提示词" value={imagePrompt} onChange={setImagePrompt} rows={10} placeholder="描述人物外貌、服装、神态、构图、光线和背景……" />
+                <TextAreaField label="负面提示词" value={negativePrompt} onChange={setNegativePrompt} rows={10} placeholder="不希望出现的元素，如文字、水印、错误肢体……" />
+              </div>
+              <div className="inline-actions image-generate-actions">
+                <button className="quiet-button" onClick={fillCharacterImagePrompt}>重新读取角色资料</button>
+                <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? "生成中…" : "生成角色图片"}<span>→</span></button>
+              </div>
+            </section>
+
+            <section className="api-preset-switcher" aria-label="切换已保存的生图 API 预设">
+              <div><span>当前生图 API</span><b>{imageApi.name || "未命名生图预设"}</b><small>{endpointHost(imageApi.endpoint)} · {imageApi.model || "未填模型"}</small></div>
+              <label><span>快速切换</span><select value={imageApi.id ?? ""} onChange={(event) => { const selected = savedImageApis.find((preset) => preset.id === event.target.value); if (selected) chooseSavedImageApi(selected); }}><option value="">选择已保存的生图站点</option>{savedImageApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model}</option>)}</select></label>
+              <button onClick={startNewImageApiPreset}>＋ 新建生图预设</button>
+            </section>
+
+            <section className="saved-api-section" aria-label="已保存的生图 API 站点">
+              <div className="saved-api-heading"><div><span>IMAGE API PRESETS</span><h2>我的生图站点</h2></div><small>{savedImageApis.length} 个预设 · 仅保存在当前浏览器</small></div>
+              {savedImageApis.length ? <div className="saved-api-grid">{savedImageApis.map((preset) => <article key={preset.id} className={imageApi.id === preset.id ? "active" : ""}><button className="saved-api-select" onClick={() => chooseSavedImageApi(preset)}><span className="provider-mark">{preset.name.trim().slice(0, 1) || "图"}</span><span><b>{preset.name}{imageApi.id === preset.id ? " · 使用中" : ""}</b><small>{endpointHost(preset.endpoint)} · {preset.model} · {preset.size}</small></span></button><button className="saved-api-delete" onClick={() => preset.id && removeSavedImageApi(preset.id)} aria-label={`删除 ${preset.name}`}>×</button></article>)}</div> : <div className="saved-api-empty"><b>还没有保存生图站点</b><span>填写下方接口后保存，即可在不同生图 API 之间快速切换。</span></div>}
+            </section>
+
+            <section className="editor-card api-form image-api-form">
+              <div className="section-heading"><div><span>ACTIVE IMAGE PRESET</span><h2>{imageApi.name || "生图 API"}</h2></div><small>OpenAI Images 兼容格式</small></div>
+              <div className="field-grid api-fields">
+                <Field label="预设名称" value={imageApi.name} onChange={(value) => setImageApi((current) => ({ ...current, name: value }))} placeholder="我的生图站点" />
+                <Field label="模型名称" value={imageApi.model} onChange={(value) => setImageApi((current) => ({ ...current, model: value }))} placeholder="gpt-image-1 / 站点模型 ID" required />
+                <Field label="图片尺寸" value={imageApi.size} onChange={(value) => setImageApi((current) => ({ ...current, size: value }))} placeholder="1024x1024" />
+                <Field label="质量参数" value={imageApi.quality} onChange={(value) => setImageApi((current) => ({ ...current, quality: value }))} placeholder="auto / standard / hd" />
+                <label className="field field-wide"><span className="field-label">生图 API Endpoint <i>必填</i></span><input value={imageApi.endpoint} onChange={(event) => setImageApi((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://站点地址/v1/images/generations" /><small className="field-helper">可填写站点根地址、/v1，或完整的 /images/generations 地址。</small></label>
+                <label className="field field-wide"><span className="field-label">API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={imageApi.apiKey} onChange={(event) => setImageApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>
+                <Field label="风格参数（可选）" value={imageApi.style} onChange={(value) => setImageApi((current) => ({ ...current, style: value }))} placeholder="natural / vivid / 留空" />
+              </div>
+              <div className="api-notice"><span>i</span><p><b>兼容说明</b>当前支持 OpenAI Images API 格式及同格式中转站。特殊的 Stability、ComfyUI 工作流接口需要另行适配。</p></div>
+              <div className="inline-actions api-actions">
+                <button className="secondary-button" onClick={() => saveCurrentImageApi(false)}>{imageApi.id ? "保存当前修改" : "保存为新预设"}</button>
+                {imageApi.id && <button className="quiet-button" onClick={() => saveCurrentImageApi(true)}>另存为新预设</button>}
+                <button className="text-button danger" onClick={clearImageApiKey}>清除密钥</button>
+              </div>
             </section>
           </div>
         )}

@@ -55,7 +55,9 @@ test("supports local issue repair, built-in knowledge, and batch archives", asyn
   assert.match(page, /char-world-book-bundle-v1/);
   assert.match(route, /一次只解决用户明确指出的当前问题/);
   assert.match(css, /overflow-x: hidden/);
-  assert.match(css, /grid-template-columns: repeat\(5/);
+  assert.match(css, /grid-template-columns: repeat\(6/);
+  assert.match(css, /\.library-page \.page-intro-actions/);
+  assert.match(css, /\.library-entry textarea \{ overflow-wrap: anywhere/);
 });
 
 test("separates online and offline greeting modes", async () => {
@@ -83,6 +85,20 @@ test("uses a structured persona template and relationship premise", async () => 
   assert.match(route, /不得强行偶遇或越级推进/);
 });
 
+test("provides a character image studio with independent API presets", async () => {
+  const [page, imageRoute, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/image/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /CHARACTER IMAGE STUDIO/);
+  assert.match(page, /char-image-api-presets/);
+  assert.match(page, /设为卡片背景/);
+  assert.match(imageRoute, /images\/generations/);
+  assert.match(imageRoute, /b64_json/);
+  assert.match(css, /\.image-studio-grid/);
+});
+
 test("ships installable app assets and removes the starter preview", async () => {
   const [manifest, serviceWorker] = await Promise.all([
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
@@ -93,6 +109,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v5/);
+  assert.match(serviceWorker, /char-shell-v7/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
