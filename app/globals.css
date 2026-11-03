@@ -432,9 +432,10 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
 .character-card-body h2 { margin: 7px 0 6px; overflow: hidden; font-family: Georgia, "Noto Serif SC", serif; font-size: 21px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .character-card-body p { min-height: 42px; margin: 0; display: -webkit-box; overflow: hidden; color: #7a7f7c; font-size: 9px; line-height: 1.65; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .character-card-meta { display: flex; gap: 12px; margin-top: 13px; color: #8c918e; font-size: 8px; }
-.character-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 15px; }
+.character-card-actions { display: grid; grid-template-columns: 1fr 1fr auto; gap: 7px; margin-top: 15px; }
 .character-card-actions button { min-height: 34px; padding: 0 8px; border: 1px solid #d6d9d7; border-radius: 8px; background: #fff; color: #5d625f; font-size: 9px; font-weight: 700; }
 .character-card-actions button:first-child { border-color: #343735; background: #343735; color: #fff; }
+.character-card-actions button.danger { color: var(--danger); }
 .world-book-shelf { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
 .world-book-card { min-width: 0; position: relative; border: 1px solid #d8dbd9; border-radius: 12px; background: rgba(255,255,255,.72); }
 .world-book-card.active { border-color: #737b76; background: #fff; box-shadow: 0 9px 24px rgba(27,30,28,.07); }
@@ -560,6 +561,12 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
 .connection-badge span { width: 7px; height: 7px; border-radius: 50%; background: #b8bbba; }
 .connection-badge.ready span { background: #61776a; box-shadow: 0 0 0 4px rgba(97,119,106,0.1); }
 .preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.api-kind-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.api-kind-tabs button { min-height: 76px; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center; padding: 15px 18px; border: 1px solid #d7dad8; border-radius: 12px; background: rgba(255,255,255,.68); color: #777c79; text-align: left; }
+.api-kind-tabs button > span { grid-row: 1 / 3; color: #a0a4a1; font-family: Georgia, serif; font-size: 11px; letter-spacing: .08em; }
+.api-kind-tabs button b { align-self: end; font-family: Georgia, "Noto Serif SC", serif; font-size: 16px; font-weight: 400; }
+.api-kind-tabs button small { align-self: start; margin-top: 3px; color: #999d9a; font-size: 8px; }
+.api-kind-tabs button.active { border-color: #565c58; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(28,31,29,.06); }
 .preset-grid > button { min-height: 90px; display: grid; grid-template-columns: 35px 1fr 15px; align-items: center; gap: 10px; padding: 15px; border: 1px solid #d9dbda; border-radius: 12px; background: rgba(255,255,255,0.72); color: #6f7371; text-align: left; transition: 150ms ease; }
 .preset-grid > button:hover { border-color: #a8aba9; transform: translateY(-1px); }
 .preset-grid > button.active { border-color: #555a57; background: #fff; color: var(--ink); box-shadow: 0 10px 26px rgba(28,31,29,0.06); }
@@ -650,7 +657,7 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
   .hero h1 { font-size: clamp(34px, 11vw, 42px); overflow-wrap: anywhere; }
   .hero-card { min-height: 205px; }
   .profile-orbit { width: 100px; height: 100px; }
-  .dual-textareas, .split-editor, .field-grid, .relationship-premise-grid, .preset-grid, .saved-api-grid, .api-help, .api-preset-switcher, .character-shelf, .world-book-shelf, .image-studio-grid { grid-template-columns: minmax(0, 1fr); }
+  .dual-textareas, .split-editor, .field-grid, .relationship-premise-grid, .preset-grid, .saved-api-grid, .api-help, .api-preset-switcher, .api-kind-tabs, .character-shelf, .world-book-shelf, .image-studio-grid { grid-template-columns: minmax(0, 1fr); }
   input, textarea, select { min-width: 0; max-width: 100%; font-size: 16px !important; }
   button, .file-button { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
   textarea { resize: vertical; }

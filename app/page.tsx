@@ -71,7 +71,9 @@ type ImagePreset = {
   id?: string;
   name: string;
   endpoint: string;
+  modelsEndpoint: string;
   model: string;
+  models: string[];
   apiKey: string;
   size: string;
   quality: string;
@@ -160,7 +162,9 @@ const DEFAULT_API: ApiPreset = {
 const DEFAULT_IMAGE_API: ImagePreset = {
   name: "OpenAI Images",
   endpoint: "https://api.openai.com/v1/images/generations",
+  modelsEndpoint: "https://api.openai.com/v1/models",
   model: "gpt-image-1",
+  models: [],
   apiKey: "",
   size: "1024x1024",
   quality: "auto",
@@ -297,7 +301,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; note: string; mark: string }> 
   { id: "library", label: "知识库", note: "长期提示与知识", mark: "03" },
   { id: "world", label: "世界书", note: "书架与设定", mark: "04" },
   { id: "image", label: "生图室", note: "角色形象生成", mark: "05" },
-  { id: "api", label: "API", note: "文本模型连接", mark: "06" },
+  { id: "api", label: "API", note: "创作与生图连接", mark: "06" },
 ];
 
 function uid() {
@@ -492,6 +496,9 @@ export default function Home() {
   const [imageBusy, setImageBusy] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [imageModelOptions, setImageModelOptions] = useState<string[]>([]);
+  const [loadingImageModels, setLoadingImageModels] = useState(false);
+  const [apiKind, setApiKind] = useState<"creation" | "image">("creation");
   const [busy, setBusy] = useState<"character" | "world" | "check" | "test" | null>(null);
   const [revising, setRevising] = useState<RevisionSection | null>(null);
   const [revisionPreview, setRevisionPreview] = useState<RevisionPreview | null>(null);
@@ -590,10 +597,15 @@ export default function Home() {
         const restoredApis = JSON.parse(storedSavedApis) as ApiPreset[];
         setSavedApis(Array.isArray(restoredApis) ? restoredApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [] })) : []);
       }
-      if (storedImageApi) setImageApi({ ...DEFAULT_IMAGE_API, ...JSON.parse(storedImageApi) } as ImagePreset);
+      if (storedImageApi) {
+        const restoredImageApi = { ...DEFAULT_IMAGE_API, ...JSON.parse(storedImageApi) } as ImagePreset;
+        restoredImageApi.models = Array.isArray(restoredImageApi.models) ? restoredImageApi.models : [];
+        setImageApi(restoredImageApi);
+        setImageModelOptions(restoredImageApi.models);
+      }
       if (storedSavedImageApis) {
         const restoredImageApis = JSON.parse(storedSavedImageApis) as ImagePreset[];
-        setSavedImageApis(Array.isArray(restoredImageApis) ? restoredImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item })) : []);
+        setSavedImageApis(Array.isArray(restoredImageApis) ? restoredImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item, models: Array.isArray(item.models) ? item.models : [] })) : []);
       }
       if (storedTone && ["mist", "warm", "paper"].includes(storedTone)) setTone(storedTone);
       if (storedMode && ["create", "extract"].includes(storedMode)) setGenerationMode(storedMode);
@@ -661,6 +673,11 @@ export default function Home() {
     if (!ready || !api.id) return;
     setSavedApis((current) => current.map((item) => item.id === api.id ? { ...api, models: [...modelOptions] } : item));
   }, [api, modelOptions, ready]);
+
+  useEffect(() => {
+    if (!ready || !imageApi.id) return;
+    setSavedImageApis((current) => current.map((item) => item.id === imageApi.id ? { ...imageApi, models: [...imageModelOptions] } : item));
+  }, [imageApi, imageModelOptions, ready]);
 
   const completion = useMemo(() => {
     const checks = [draft.name, draft.gender, draft.age, draft.language, draft.persona, draft.greetings[0], draft.biography, draft.appearance];
@@ -785,15 +802,23 @@ export default function Home() {
     setNotice("已复制为新的角色档案");
   };
 
-  const deleteCharacter = () => {
+  const deleteCharacterById = (characterId: string) => {
     if (characters.length <= 1) {
       setNotice("至少保留一个角色档案");
       return;
     }
-    if (!window.confirm(`确定删除角色“${draft.name || "char"}”吗？此操作无法撤销。`)) return;
-    const remaining = characters.filter((item) => item.id !== activeCharacterId);
-    const nextCharacter = remaining[0];
+    const syncedCharacters = recordsWithCurrentDraft();
+    const target = syncedCharacters.find((item) => item.id === characterId);
+    if (!target) return;
+    if (!window.confirm(`确定删除角色“${target.draft.name || target.label || "char"}”吗？此操作无法撤销。`)) return;
+    const remaining = syncedCharacters.filter((item) => item.id !== characterId);
     setCharacters(remaining);
+    setSelectedCharacterIds((current) => current.filter((id) => id !== characterId));
+    if (characterId !== activeCharacterId) {
+      setNotice(`角色“${target.draft.name || target.label}”已删除`);
+      return;
+    }
+    const nextCharacter = remaining[0];
     setActiveCharacterId(nextCharacter.id);
     setCharacterAvatar(nextCharacter.avatar || "");
     setCharacterCover(nextCharacter.cover || "");
@@ -807,6 +832,8 @@ export default function Home() {
     setConsistencyIssues(null);
     setNotice("角色档案已删除");
   };
+
+  const deleteCharacter = () => deleteCharacterById(activeCharacterId);
 
   const pushUndo = (label: string) => {
     const snapshot: UndoSnapshot = { label, draft: cloneDraft(draft), entries: cloneEntries(entries) };
@@ -1011,8 +1038,12 @@ export default function Home() {
         setModelOptions(restoredApi.models);
       }
       if (Array.isArray(payload.savedApis)) setSavedApis(payload.savedApis.map((item) => ({ ...DEFAULT_API, ...item, models: Array.isArray(item.models) ? item.models : [], apiKey: "" })));
-      if (payload.imageApi) setImageApi({ ...DEFAULT_IMAGE_API, ...payload.imageApi, apiKey: "" });
-      if (Array.isArray(payload.savedImageApis)) setSavedImageApis(payload.savedImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item, apiKey: "" })));
+      if (payload.imageApi) {
+        const restoredImageApi = { ...DEFAULT_IMAGE_API, ...payload.imageApi, models: Array.isArray(payload.imageApi.models) ? payload.imageApi.models : [], apiKey: "" };
+        setImageApi(restoredImageApi);
+        setImageModelOptions(restoredImageApi.models);
+      }
+      if (Array.isArray(payload.savedImageApis)) setSavedImageApis(payload.savedImageApis.map((item) => ({ ...DEFAULT_IMAGE_API, ...item, models: Array.isArray(item.models) ? item.models : [], apiKey: "" })));
       if (payload.tone) setTone(payload.tone);
       if (payload.generationMode) setGenerationMode(payload.generationMode);
       setUndoStack([]);
@@ -1089,12 +1120,15 @@ export default function Home() {
   };
 
   const chooseSavedImageApi = (preset: ImagePreset) => {
-    setImageApi({ ...DEFAULT_IMAGE_API, ...preset });
+    const restored = { ...DEFAULT_IMAGE_API, ...preset, models: Array.isArray(preset.models) ? preset.models : [] };
+    setImageApi(restored);
+    setImageModelOptions(restored.models);
     setNotice(`已切换到生图预设“${preset.name}”`);
   };
 
   const startNewImageApiPreset = () => {
-    setImageApi({ ...DEFAULT_IMAGE_API, id: undefined, name: `生图站点 ${savedImageApis.length + 1}`, endpoint: "https://your-image-api.example.com/v1/images/generations", model: "your-image-model", apiKey: "" });
+    setImageApi({ ...DEFAULT_IMAGE_API, id: undefined, name: `生图站点 ${savedImageApis.length + 1}`, endpoint: "https://your-image-api.example.com/v1/images/generations", modelsEndpoint: "", model: "your-image-model", models: [], apiKey: "" });
+    setImageModelOptions([]);
     setNotice("已新建生图 API 预设，请填写接口信息后保存");
   };
 
@@ -1107,6 +1141,7 @@ export default function Home() {
       ...imageApi,
       id: saveAsNew || !imageApi.id ? uid() : imageApi.id,
       name: saveAsNew ? `${imageApi.name} 副本` : imageApi.name,
+      models: [...imageModelOptions],
     };
     setSavedImageApis((current) => current.some((item) => item.id === saved.id)
       ? current.map((item) => item.id === saved.id ? saved : item)
@@ -1117,7 +1152,10 @@ export default function Home() {
 
   const removeSavedImageApi = (id: string) => {
     setSavedImageApis((current) => current.filter((item) => item.id !== id));
-    if (imageApi.id === id) setImageApi({ ...DEFAULT_IMAGE_API });
+    if (imageApi.id === id) {
+      setImageApi({ ...DEFAULT_IMAGE_API });
+      setImageModelOptions([]);
+    }
     setNotice("已删除该生图 API 预设");
   };
 
@@ -1202,6 +1240,36 @@ export default function Home() {
       setNotice(error instanceof Error ? error.message : "模型列表拉取失败");
     } finally {
       setLoadingModels(false);
+    }
+  };
+
+  const loadImageModels = async () => {
+    if (!imageApi.apiKey.trim() || !imageApi.endpoint.trim()) {
+      setNotice("请先填写生图 API Endpoint 和 API Key");
+      return;
+    }
+    setLoadingImageModels(true);
+    setNotice("正在从生图 API 站点拉取模型…");
+    try {
+      const response = await fetch("/api/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "models", preset: imageApi }),
+      });
+      const payload = (await response.json()) as { models?: string[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "生图模型列表拉取失败");
+      const models = payload.models ?? [];
+      setImageModelOptions(models);
+      setImageApi((current) => ({
+        ...current,
+        models,
+        model: models.length && (!current.model.trim() || current.model === "your-image-model") ? models[0] : current.model,
+      }));
+      setNotice(`已拉取 ${models.length} 个生图模型，可从下拉列表选择`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "生图模型列表拉取失败");
+    } finally {
+      setLoadingImageModels(false);
     }
   };
 
@@ -1981,6 +2049,7 @@ export default function Home() {
                     <div className="character-card-actions">
                       <button onClick={() => { switchCharacter(item.id); setView("character"); }}>打开角色卡</button>
                       <button onClick={() => { switchCharacter(item.id); setView("world"); }}>查看世界书</button>
+                      <button className="danger" onClick={() => deleteCharacterById(item.id)} disabled={characters.length <= 1}>删除角色</button>
                     </div>
                   </div>
                 </article>
@@ -2454,34 +2523,10 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="api-preset-switcher" aria-label="切换已保存的生图 API 预设">
+            <section className="api-preset-switcher image-api-summary" aria-label="当前生图 API">
               <div><span>当前生图 API</span><b>{imageApi.name || "未命名生图预设"}</b><small>{endpointHost(imageApi.endpoint)} · {imageApi.model || "未填模型"}</small></div>
               <label><span>快速切换</span><select value={imageApi.id ?? ""} onChange={(event) => { const selected = savedImageApis.find((preset) => preset.id === event.target.value); if (selected) chooseSavedImageApi(selected); }}><option value="">选择已保存的生图站点</option>{savedImageApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model}</option>)}</select></label>
-              <button onClick={startNewImageApiPreset}>＋ 新建生图预设</button>
-            </section>
-
-            <section className="saved-api-section" aria-label="已保存的生图 API 站点">
-              <div className="saved-api-heading"><div><span>IMAGE API PRESETS</span><h2>我的生图站点</h2></div><small>{savedImageApis.length} 个预设 · 仅保存在当前浏览器</small></div>
-              {savedImageApis.length ? <div className="saved-api-grid">{savedImageApis.map((preset) => <article key={preset.id} className={imageApi.id === preset.id ? "active" : ""}><button className="saved-api-select" onClick={() => chooseSavedImageApi(preset)}><span className="provider-mark">{preset.name.trim().slice(0, 1) || "图"}</span><span><b>{preset.name}{imageApi.id === preset.id ? " · 使用中" : ""}</b><small>{endpointHost(preset.endpoint)} · {preset.model} · {preset.size}</small></span></button><button className="saved-api-delete" onClick={() => preset.id && removeSavedImageApi(preset.id)} aria-label={`删除 ${preset.name}`}>×</button></article>)}</div> : <div className="saved-api-empty"><b>还没有保存生图站点</b><span>填写下方接口后保存，即可在不同生图 API 之间快速切换。</span></div>}
-            </section>
-
-            <section className="editor-card api-form image-api-form">
-              <div className="section-heading"><div><span>ACTIVE IMAGE PRESET</span><h2>{imageApi.name || "生图 API"}</h2></div><small>OpenAI Images 兼容格式</small></div>
-              <div className="field-grid api-fields">
-                <Field label="预设名称" value={imageApi.name} onChange={(value) => setImageApi((current) => ({ ...current, name: value }))} placeholder="我的生图站点" />
-                <Field label="模型名称" value={imageApi.model} onChange={(value) => setImageApi((current) => ({ ...current, model: value }))} placeholder="gpt-image-1 / 站点模型 ID" required />
-                <Field label="图片尺寸" value={imageApi.size} onChange={(value) => setImageApi((current) => ({ ...current, size: value }))} placeholder="1024x1024" />
-                <Field label="质量参数" value={imageApi.quality} onChange={(value) => setImageApi((current) => ({ ...current, quality: value }))} placeholder="auto / standard / hd" />
-                <label className="field field-wide"><span className="field-label">生图 API Endpoint <i>必填</i></span><input value={imageApi.endpoint} onChange={(event) => setImageApi((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://站点地址/v1/images/generations" /><small className="field-helper">可填写站点根地址、/v1，或完整的 /images/generations 地址。</small></label>
-                <label className="field field-wide"><span className="field-label">API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={imageApi.apiKey} onChange={(event) => setImageApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>
-                <Field label="风格参数（可选）" value={imageApi.style} onChange={(value) => setImageApi((current) => ({ ...current, style: value }))} placeholder="natural / vivid / 留空" />
-              </div>
-              <div className="api-notice"><span>i</span><p><b>兼容说明</b>当前支持 OpenAI Images API 格式及同格式中转站。特殊的 Stability、ComfyUI 工作流接口需要另行适配。</p></div>
-              <div className="inline-actions api-actions">
-                <button className="secondary-button" onClick={() => saveCurrentImageApi(false)}>{imageApi.id ? "保存当前修改" : "保存为新预设"}</button>
-                {imageApi.id && <button className="quiet-button" onClick={() => saveCurrentImageApi(true)}>另存为新预设</button>}
-                <button className="text-button danger" onClick={clearImageApiKey}>清除密钥</button>
-              </div>
+              <button onClick={() => { setApiKind("image"); setView("api"); }}>管理生图 API</button>
             </section>
           </div>
         )}
@@ -2489,10 +2534,16 @@ export default function Home() {
         {view === "api" && (
           <div className="page-wrap api-page">
             <section className="page-intro">
-              <div><span className="eyebrow">MODEL CONNECTION · 模型连接</span><h1>连接你信任的模型服务。</h1><p>可添加多个 OpenAI 兼容站点并拉取模型列表。密钥只保存在当前浏览器，不会写入网站数据库。</p></div>
-              <div className={`connection-badge ${api.apiKey ? "ready" : ""}`}><span />{api.apiKey ? "已填写密钥" : "等待配置"}</div>
+              <div><span className="eyebrow">API CONNECTION · 接口管理</span><h1>分别管理创作与生图模型。</h1><p>两类 API 预设独立保存、切换和拉取模型。密钥只保存在当前浏览器，不会写入网站数据库。</p></div>
+              <div className={`connection-badge ${(apiKind === "creation" ? api.apiKey : imageApi.apiKey) ? "ready" : ""}`}><span />{(apiKind === "creation" ? api.apiKey : imageApi.apiKey) ? "当前接口已配置" : "等待配置"}</div>
             </section>
 
+            <section className="api-kind-tabs" aria-label="选择 API 类型">
+              <button className={apiKind === "creation" ? "active" : ""} onClick={() => setApiKind("creation")}><span>01</span><b>创作 API</b><small>角色卡、优化与世界书</small></button>
+              <button className={apiKind === "image" ? "active" : ""} onClick={() => setApiKind("image")}><span>02</span><b>生图 API</b><small>角色头像与卡片背景</small></button>
+            </section>
+
+            {apiKind === "creation" ? (<>
             <section className="preset-grid" aria-label="API 服务商预设">
               {(Object.keys(PROVIDERS) as Provider[]).map((provider) => (
                 <button key={provider} className={api.provider === provider ? "active" : ""} onClick={() => chooseProvider(provider)}>
@@ -2585,6 +2636,55 @@ export default function Home() {
               <div><span>02</span><b>拉取并选择模型</b><p>点击“拉取模型”，也可在站点不支持列表接口时手动输入模型 ID。</p></div>
               <div><span>03</span><b>保存多个预设</b><p>保存后可在不同 API 站点之间切换，用于角色卡和世界书生成。</p></div>
             </section>
+            </>) : (<>
+              <section className="api-preset-switcher" aria-label="切换已保存的生图 API 预设">
+                <div><span>当前生图 API 预设</span><b>{imageApi.name || "未命名生图预设"}</b><small>{endpointHost(imageApi.endpoint)} · {imageApi.model || "未选模型"}</small></div>
+                <label><span>快速切换</span><select value={imageApi.id ?? ""} onChange={(event) => { const selected = savedImageApis.find((preset) => preset.id === event.target.value); if (selected) chooseSavedImageApi(selected); }}><option value="">选择已保存的生图站点</option>{savedImageApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model || "未选模型"}</option>)}</select></label>
+                <button onClick={startNewImageApiPreset}>＋ 新建生图预设</button>
+              </section>
+
+              <section className="saved-api-section" aria-label="已保存的生图 API 站点">
+                <div className="saved-api-heading"><div><span>IMAGE API PRESETS</span><h2>我的生图 API 预设</h2></div><small>{savedImageApis.length} 个预设 · 与创作 API 分开保存</small></div>
+                {savedImageApis.length ? <div className="saved-api-grid">{savedImageApis.map((preset) => <article key={preset.id} className={imageApi.id === preset.id ? "active" : ""}><button className="saved-api-select" onClick={() => chooseSavedImageApi(preset)}><span className="provider-mark">{preset.name.trim().slice(0, 1) || "图"}</span><span><b>{preset.name}{imageApi.id === preset.id ? " · 使用中" : ""}</b><small>{endpointHost(preset.endpoint)} · {preset.model || "未选模型"} · {preset.models?.length ?? 0} 个已拉取模型</small></span></button><button className="saved-api-delete" onClick={() => preset.id && removeSavedImageApi(preset.id)} aria-label={`删除 ${preset.name}`}>×</button></article>)}</div> : <div className="saved-api-empty"><b>还没有生图 API 预设</b><span>新建预设后，可为每个角色使用不同的图片模型。</span></div>}
+              </section>
+
+              <section className="editor-card api-form image-api-form">
+                <div className="section-heading"><div><span>ACTIVE IMAGE PRESET</span><h2>{imageApi.name || "生图 API"}</h2></div><small>OpenAI Images 兼容格式</small></div>
+                <div className="field-grid api-fields">
+                  <Field label="预设名称" value={imageApi.name} onChange={(value) => setImageApi((current) => ({ ...current, name: value }))} placeholder="我的生图站点" />
+                  <label className="field">
+                    <span className="field-label">生图模型名称 <i>必填</i></span>
+                    <div className="model-picker">
+                      <div className="model-fields">
+                        {imageModelOptions.length > 0 && <select aria-label="选择已拉取的生图模型" value={imageModelOptions.includes(imageApi.model) ? imageApi.model : ""} onChange={(event) => event.target.value && setImageApi((current) => ({ ...current, model: event.target.value }))}><option value="">已拉取 {imageModelOptions.length} 个模型，点击选择</option>{imageModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}</select>}
+                        <input aria-label="手动输入生图模型 ID" value={imageApi.model} onChange={(event) => setImageApi((current) => ({ ...current, model: event.target.value }))} placeholder="也可以手动输入生图模型 ID" />
+                      </div>
+                      <button type="button" onClick={loadImageModels} disabled={loadingImageModels}>{loadingImageModels ? "拉取中…" : "拉取模型"}</button>
+                    </div>
+                    <small className="field-helper">{imageModelOptions.length > 0 ? `列表中共有 ${imageModelOptions.length} 个模型；请选择支持图片生成的模型。` : "从生图站点拉取模型，也可以直接手动填写模型 ID。"}</small>
+                  </label>
+                  <Field label="图片尺寸" value={imageApi.size} onChange={(value) => setImageApi((current) => ({ ...current, size: value }))} placeholder="1024x1024" />
+                  <Field label="质量参数" value={imageApi.quality} onChange={(value) => setImageApi((current) => ({ ...current, quality: value }))} placeholder="auto / standard / hd" />
+                  <label className="field field-wide"><span className="field-label">生图 API Endpoint <i>必填</i></span><input value={imageApi.endpoint} onChange={(event) => { setImageApi((current) => ({ ...current, endpoint: event.target.value, models: [] })); setImageModelOptions([]); }} placeholder="https://站点地址/v1 或 /v1/images/generations" /><small className="field-helper">可填写站点根地址、/v1，或完整的 /images/generations 地址。</small></label>
+                  <label className="field field-wide"><span className="field-label">生图模型列表地址 <i>可选</i></span><input value={imageApi.modelsEndpoint} onChange={(event) => setImageApi((current) => ({ ...current, modelsEndpoint: event.target.value }))} placeholder="留空时根据生图 Endpoint 自动推导 /models" /><small className="field-helper">站点使用特殊模型列表路径时填写；一般可以留空。</small></label>
+                  <label className="field field-wide"><span className="field-label">生图 API Key <i>仅本机</i></span><input type="password" autoComplete="off" value={imageApi.apiKey} onChange={(event) => setImageApi((current) => ({ ...current, apiKey: event.target.value }))} placeholder="sk-…" /></label>
+                  <Field label="风格参数（可选）" value={imageApi.style} onChange={(value) => setImageApi((current) => ({ ...current, style: value }))} placeholder="natural / vivid / 留空" />
+                </div>
+                <div className="api-notice"><span>i</span><p><b>兼容说明</b>模型列表通常来自 /v1/models，图片生成使用 /v1/images/generations。特殊的 Stability、ComfyUI 工作流接口需要另行适配。</p></div>
+                <div className="inline-actions api-actions">
+                  <button className="secondary-button" onClick={() => saveCurrentImageApi(false)}>{imageApi.id ? "保存当前修改" : "保存为新预设"}</button>
+                  {imageApi.id && <button className="quiet-button" onClick={() => saveCurrentImageApi(true)}>另存为新预设</button>}
+                  <button className="primary-button compact" onClick={() => setView("image")}>前往生图室 <span>→</span></button>
+                  <button className="text-button danger" onClick={clearImageApiKey}>清除密钥</button>
+                </div>
+              </section>
+
+              <section className="api-help">
+                <div><span>01</span><b>添加生图站点</b><p>填写 Images 兼容接口地址和只保存在本机的 API Key。</p></div>
+                <div><span>02</span><b>拉取生图模型</b><p>点击“拉取模型”，从列表选择图片模型；不支持列表时可手动输入。</p></div>
+                <div><span>03</span><b>独立保存切换</b><p>生图预设不会覆盖创作 API，可随时切换后回到生图室使用。</p></div>
+              </section>
+            </>)}
           </div>
         )}
 

@@ -41,6 +41,15 @@ test("stores and switches independent API site presets", async () => {
   assert.match(source, /快速切换/);
   assert.match(source, /另存为新预设/);
   assert.match(source, /已切换到站点预设/);
+  assert.match(source, /创作 API/);
+  assert.match(source, /生图 API/);
+});
+
+test("allows deleting a character directly from the character library", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /deleteCharacterById/);
+  assert.match(source, /确定删除角色/);
+  assert.match(source, /onClick=\{\(\) => deleteCharacterById\(item.id\)\}/);
 });
 
 test("supports local issue repair, built-in knowledge, and batch archives", async () => {
@@ -107,7 +116,11 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /CHARACTER IMAGE STUDIO/);
   assert.match(page, /char-image-api-presets/);
   assert.match(page, /设为卡片背景/);
+  assert.match(page, /loadImageModels/);
+  assert.match(page, /生图模型列表地址/);
   assert.match(imageRoute, /images\/generations/);
+  assert.match(imageRoute, /normalizedModelsEndpoint/);
+  assert.match(imageRoute, /无法拉取生图模型/);
   assert.match(imageRoute, /b64_json/);
   assert.match(css, /\.image-studio-grid/);
 });
@@ -122,6 +135,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v8/);
+  assert.match(serviceWorker, /char-shell-v9/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
