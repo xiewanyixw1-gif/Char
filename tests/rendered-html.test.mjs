@@ -85,6 +85,19 @@ test("uses a structured persona template and relationship premise", async () => 
   assert.match(route, /不得强行偶遇或越级推进/);
 });
 
+test("structures biographies by age and prevents module repetition", async () => {
+  const [page, route] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /char-module-boundaries/);
+  assert.match(page, /23-现在（社会）/);
+  assert.match(page, /对未来的期望/);
+  assert.match(route, /MODULE_BOUNDARIES_SYSTEM/);
+  assert.match(route, /超过当前年龄的阶段写“尚未经历”/);
+  assert.match(route, /各阶段内容不得重复/);
+});
+
 test("provides a character image studio with independent API presets", async () => {
   const [page, imageRoute, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -109,6 +122,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v7/);
+  assert.match(serviceWorker, /char-shell-v8/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

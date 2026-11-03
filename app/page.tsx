@@ -193,6 +193,14 @@ const DEFAULT_LIBRARY: LibraryEntry[] = [
     builtIn: true,
   },
   {
+    id: "char-module-boundaries",
+    title: "各模块分工与内容去重",
+    category: "人设要求",
+    content: "每个模块只承担自己的职责，不复制其他模块已经写过的内容：人设正文写角色当前稳定的核心、性格、心理、习惯、关系模式与行为逻辑；人物小传只按年龄阶段写已经发生的大事、选择、关系变化及其后果；生图外貌只写可以直接画出来的视觉特征；世界书只写角色之外的时代、地点、制度、组织和 NPC 资料；开场白只呈现当前关系阶段下的具体互动。禁止把同一段经历、同一种性格结论或同一背景说明换句话重复到多个模块，也不要使用“这是一个群像世界”“这是群像叙事”等创作说明式措辞。",
+    enabled: true,
+    builtIn: true,
+  },
+  {
     id: "char-user-relationship-premise",
     title: "User 关系阶段与交集前提",
     category: "互动规则",
@@ -218,9 +226,9 @@ const DEFAULT_LIBRARY: LibraryEntry[] = [
   },
   {
     id: "char-npc-ensemble",
-    title: "丰富群像与 NPC 规则",
+    title: "丰富配角与 NPC 规则",
     category: "世界书参考",
-    content: "围绕当前角色的人设生成有功能且有独立生活的 NPC 群像。NPC 的姓名、年龄、外貌记忆点、性格、说话方式、目标、秘密、与角色及 {{user}} 的关系必须彼此区分。按背景补足家人、同学、老师、朋友、同事、邻居、对手或组织成员；避免所有 NPC 都围着主角转、同质化姓名或只有工具人作用。",
+    content: "围绕当前角色的人设生成有功能且有独立生活的 NPC。NPC 的姓名、年龄、外貌记忆点、性格、说话方式、目标、秘密、与角色及 {{user}} 的关系必须彼此区分。按背景补足家人、同学、老师、朋友、同事、邻居、对手或组织成员；避免所有 NPC 都围着主角转、同质化姓名或只有工具人作用。输出设定本身，不要额外强调“群像世界”或“群像叙事”。",
     enabled: true,
     builtIn: true,
   },
@@ -566,7 +574,8 @@ export default function Home() {
         const legacyVariableContent = "角色统一使用 {{char}}，对话用户统一使用 {{user}}。必须保留双花括号，不要擅自替换成具体姓名；不要替 {{user}} 决定言行、心理或过去。";
         const mergedBuiltIns = DEFAULT_LIBRARY.map((item) => {
           const existing = restoredLibrary.find((entry) => entry.id === item.id);
-          if (!existing || existing.content === legacyVariableContent) return { ...item };
+          const usesLegacyNpcRule = existing?.id === "char-npc-ensemble" && existing.title === "丰富群像与 NPC 规则";
+          if (!existing || existing.content === legacyVariableContent || usesLegacyNpcRule) return { ...item };
           return { ...existing, builtIn: true };
         });
         setLibrary([...mergedBuiltIns, ...restoredLibrary.filter((item) => !builtInIds.has(item.id))]);
@@ -2193,14 +2202,14 @@ export default function Home() {
             <div className="split-editor">
               <section className="editor-card">
                 <div className="section-heading"><div><span>STEP 05</span><h2>人物小传</h2></div><button className="copy-button" onClick={() => copyText("人物小传", draft.biography)} disabled={!draft.biography.trim()}>复制</button></div>
-                <TextAreaField label="人物经历" value={draft.biography} onChange={(value) => updateDraft("biography", value)} rows={12} placeholder="按时间线整理出身、转折、关系变化与当前状态……" />
+                <TextAreaField label="成长脉络与未来期望" value={draft.biography} onChange={(value) => updateDraft("biography", value)} rows={16} placeholder={"## 成长脉络\n0-6岁（童年）：\n7-12岁（小学）：\n13-15岁（初中）：\n16-18岁（高中）：\n19-22岁（大学）：\n23-现在（社会）：\n\n## 对未来的期望"} />
                 <RevisionPanel
                   section="人物小传"
                   value={revisionNotes.biography}
                   onChange={(value) => updateRevisionNote("biography", value)}
                   onSubmit={() => optimizeSection("biography")}
                   loading={revising === "biography"}
-                  example="例如：补充留学经历，但不要改变家庭关系"
+                  example="例如：按年龄补齐各阶段大事，每阶段不要重复同一经历"
                 />
               </section>
               <section className="editor-card">
@@ -2259,7 +2268,7 @@ export default function Home() {
         {view === "library" && (
           <div className="page-wrap library-page">
             <section className="page-intro">
-              <div><span className="eyebrow">CREATIVE LIBRARY · 内置知识库</span><h1>把长期要求，交给 AI 一直记住。</h1><p>已内置姓名变量、立体人设、日常作息、人物反差、时代城市、校园家庭和丰富 NPC 群像规则。每条都能编辑或停用。</p></div>
+              <div><span className="eyebrow">CREATIVE LIBRARY · 内置知识库</span><h1>把长期要求，交给 AI 一直记住。</h1><p>已内置姓名变量、立体人设、成长脉络、模块去重、日常作息、人物反差、时代城市、校园家庭和 NPC 规则。每条都能编辑或停用。</p></div>
               <div className="page-intro-actions">
                 <label className="file-button">导入资料<input type="file" accept=".json,.txt,.md,application/json,text/plain" onChange={importLibrary} /></label>
                 <button className="quiet-button" onClick={exportLibrary} disabled={!library.length}>导出</button>
