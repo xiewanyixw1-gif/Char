@@ -22,9 +22,8 @@ test("server-renders the Char workspace", async () => {
   const html = await response.text();
   assert.match(html, /Char/);
   assert.match(html, /角色工作室/);
-  assert.match(html, /角色档案管理/);
-  assert.match(html, /完整备份/);
-  assert.match(html, /AI 一致性检查/);
+  assert.match(html, /角色库/);
+  assert.match(html, /批量导入/);
   assert.match(html, /manifest\.webmanifest/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
@@ -44,6 +43,21 @@ test("stores and switches independent API site presets", async () => {
   assert.match(source, /已切换到站点预设/);
 });
 
+test("supports local issue repair, built-in knowledge, and batch archives", async () => {
+  const [page, route, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /仅修复这一项/);
+  assert.match(page, /char-npc-ensemble/);
+  assert.match(page, /char-character-bundle-v1/);
+  assert.match(page, /char-world-book-bundle-v1/);
+  assert.match(route, /一次只解决用户明确指出的当前问题/);
+  assert.match(css, /overflow-x: hidden/);
+  assert.match(css, /grid-template-columns: repeat\(5/);
+});
+
 test("ships installable app assets and removes the starter preview", async () => {
   const [manifest, serviceWorker] = await Promise.all([
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
@@ -54,6 +68,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v2/);
+  assert.match(serviceWorker, /char-shell-v3/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
