@@ -58,6 +58,18 @@ test("supports local issue repair, built-in knowledge, and batch archives", asyn
   assert.match(css, /grid-template-columns: repeat\(5/);
 });
 
+test("separates online and offline greeting modes", async () => {
+  const [page, route] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type GreetingMode = "online" \| "offline"/);
+  assert.match(page, /线上聊天/);
+  assert.match(page, /线下聊天/);
+  assert.match(route, /greetingModes/);
+  assert.match(route, /线上聊天要符合消息/);
+});
+
 test("ships installable app assets and removes the starter preview", async () => {
   const [manifest, serviceWorker] = await Promise.all([
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
@@ -68,6 +80,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v3/);
+  assert.match(serviceWorker, /char-shell-v4/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

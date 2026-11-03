@@ -366,6 +366,13 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
 .greeting-item > span { padding-top: 12px; font-family: Georgia, serif; font-size: 11px; font-style: italic; color: #929593; cursor: grab; }
 .greeting-item.dragging { opacity: 0.48; }
 .greeting-editor { min-width: 0; }
+.greeting-type-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.greeting-mode { display: inline-flex; align-items: center; min-height: 27px; padding: 0 10px; border: 1px solid #cfd7d2; border-radius: 999px; font-size: 8px; font-weight: 750; letter-spacing: 0.06em; white-space: nowrap; }
+.greeting-mode.online { border-color: #cbd5df; background: #f1f5f8; color: #62798b; }
+.greeting-mode.offline { border-color: #d7d2c8; background: #f7f5ef; color: #82765e; }
+.greeting-type-row label { display: flex; align-items: center; gap: 7px; color: #929694; font-size: 8px; }
+.greeting-type-row select { height: 29px; padding: 0 28px 0 9px; border: 1px solid #d9dcda; border-radius: 7px; outline: 0; background: #fff; color: #5f6461; font-size: 9px; }
+.greeting-type-row select:focus { border-color: #8e9490; }
 .single-greeting-refine { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; margin-top: 7px; }
 .single-greeting-refine input { min-width: 0; height: 34px; padding: 0 10px; border: 1px solid #d9dbda; border-radius: 7px; outline: 0; background: rgba(250,251,250,0.9); font-size: 9px; }
 .single-greeting-refine input:focus { border-color: #888c8a; background: #fff; }
@@ -625,6 +632,9 @@ input::placeholder, textarea::placeholder { color: #b2b5b3; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 10px; margin-bottom: 20px; }
   .section-heading > small { display: none; }
   .section-heading-actions { flex-wrap: wrap; }
+  .greeting-type-row { align-items: stretch; flex-direction: column; }
+  .greeting-type-row label { justify-content: space-between; }
+  .greeting-type-row select { flex: 1; }
   .source-card .inline-actions { align-items: flex-start; flex-direction: column; gap: 5px; }
   .source-card .section-heading { flex-direction: column; }
   .mode-switch { width: 100%; }

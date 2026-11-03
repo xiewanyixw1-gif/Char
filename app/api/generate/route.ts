@@ -17,12 +17,12 @@ type GenerateRequest = {
   };
 };
 
-const CHARACTER_EXTRACT_SYSTEM = `你是专业的 AI 角色设定整理师。完整阅读资料，忠实提取设定，不擅自改写身份、经历、关系或世界观。原文未明确的信息使用空字符串；冲突设定写入 conflicts，不自行裁决。保留人物复杂性、缺点、隐藏动机、语言风格和情绪变化。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是至少 1 条字符串数组，原资料有多个开场情境时全部保留。persona 以第三人称整理身份、背景、性格、心理、欲望、恐惧、行为逻辑、说话方式、关系、互动模式、日常作息、喜恶与人物反差。叙述中使用角色真实姓名。biography 按人生轨迹叙述。appearance 只写可视觉化信息。`;
+const CHARACTER_EXTRACT_SYSTEM = `你是专业的 AI 角色设定整理师。完整阅读资料，忠实提取设定，不擅自改写身份、经历、关系或世界观。原文未明确的信息使用空字符串；冲突设定写入 conflicts，不自行裁决。保留人物复杂性、缺点、隐藏动机、语言风格和情绪变化。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, greetingModes, biography, appearance, conflicts。greetings 是至少 1 条字符串数组，原资料有多个开场情境时全部保留。greetingModes 必须与 greetings 等长，每项只能是 online 或 offline；消息、电话、视频、社交平台等远程互动标为 online，同处一个现实场景的面对面互动标为 offline。persona 以第三人称整理身份、背景、性格、心理、欲望、恐惧、行为逻辑、说话方式、关系、互动模式、日常作息、喜恶与人物反差。叙述中使用角色真实姓名。biography 按人生轨迹叙述。appearance 只写可视觉化信息。`;
 
-const CHARACTER_CREATE_SYSTEM = `你是专业的 AI 角色设定创作师。用户会提供想要的人设方向与世界背景，请在严格遵守这些要求的前提下，直接创作一张完整、可长期稳定扮演的角色卡。合理补齐姓名、经历、关系、行为逻辑、语言习惯和视觉细节，使各模块互相一致；不要加入违背用户要求的身份、性格或关系。避免空泛标签、完美化人物和套路化表达，让角色有缺点、矛盾、欲望、恐惧与清晰边界。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, biography, appearance, conflicts。greetings 是至少 1 条可直接开聊的字符串数组；可按用户要求生成任意数量，不替用户决定言行。persona 以第三人称写身份、背景、性格形成原因、心理、目标、弱点、行为逻辑、说话方式、关系、互动模式、日常作息、生活习惯、喜恶、擅长与不擅长，并加入有依据的人物反差点；描述中始终使用生成出的角色真实姓名。背景需明确时代、城市或学校、家庭与社会环境，不能只用模糊占位词。biography 按时间线叙述。appearance 只写可视觉化内容。conflicts 用于记录需要用户确认的创作选择，没有则为空字符串。`;
+const CHARACTER_CREATE_SYSTEM = `你是专业的 AI 角色设定创作师。用户会提供想要的人设方向与世界背景，请在严格遵守这些要求的前提下，直接创作一张完整、可长期稳定扮演的角色卡。合理补齐姓名、经历、关系、行为逻辑、语言习惯和视觉细节，使各模块互相一致；不要加入违背用户要求的身份、性格或关系。避免空泛标签、完美化人物和套路化表达，让角色有缺点、矛盾、欲望、恐惧与清晰边界。只返回合法 JSON，不要 Markdown、解释或代码围栏。JSON 必须包含以下键：name, gender, note, nickname, signature, age, suffix, language, persona, greetings, greetingModes, biography, appearance, conflicts。greetings 是至少 1 条可直接开聊的字符串数组；可按用户要求生成任意数量，不替用户决定言行。greetingModes 必须与 greetings 等长，每项只能是 online 或 offline；消息、电话、视频、社交平台等远程互动标为 online，同处一个现实场景的面对面互动标为 offline。适合时至少各生成一条线上和线下开场，但不要违背用户明确指定的单一场景。线上开场要呈现聊天媒介与消息节奏，线下开场要呈现环境、动作和现场感。persona 以第三人称写身份、背景、性格形成原因、心理、目标、弱点、行为逻辑、说话方式、关系、互动模式、日常作息、生活习惯、喜恶、擅长与不擅长，并加入有依据的人物反差点；描述中始终使用生成出的角色真实姓名。背景需明确时代、城市或学校、家庭与社会环境，不能只用模糊占位词。biography 按时间线叙述。appearance 只写可视觉化内容。conflicts 用于记录需要用户确认的创作选择，没有则为空字符串。`;
 
 const WORLD_SYSTEM = `你是世界观与群像资料编辑。将输入拆成独立、清晰、可按关键词触发的世界书条目。覆盖必要的时代、国家、城市、地点、学校、家庭、组织、制度、历史事件、人物关系、力量体系与特殊规则。根据角色身份补足有不同姓名、性格、目标、说话方式与关系的 NPC 群像，NPC 不得同质化或只作为工具人；校园背景需明确学校、年级班级、校规、社团、宿舍和师生同学，家庭背景需明确成员、经济与关系。不要把无关内容堆在一个条目里，也不要违背输入中的事实。只返回合法 JSON 数组，不要 Markdown、解释或代码围栏。每项包含 title, keys, content, category, priority, enabled。keys 是用中文逗号分隔的触发词字符串；category 只能是世界观、时代、城市、地点、学校、家庭、NPC、组织、人物关系、历史事件、规则、力量体系之一；priority 为 1 到 100 的整数；enabled 为 true。`;
-const CONSISTENCY_SYSTEM = `你是角色卡质量审校员。检查基础信息、人设正文、开场白、人物小传、生图外貌、冲突说明与世界书之间是否存在事实矛盾、年龄或时间线冲突、关系冲突、角色语气偏离、不可视觉化的外貌描述、用户变量误用，以及替 {{user}} 决定言行或心理的问题。只返回合法 JSON 数组，每项包含 section, issue, suggestion。section 只能是 basic、persona、greetings、biography、appearance、world、conflicts 之一；issue 用简洁中文说明一个具体问题；suggestion 只说明怎样修复这一项，不得要求重写其他内容。一个对象只能包含一个问题；没有发现问题时返回空数组。不要改写原文，不要输出 Markdown 或解释。`;
+const CONSISTENCY_SYSTEM = `你是角色卡质量审校员。检查基础信息、人设正文、开场白、人物小传、生图外貌、冲突说明与世界书之间是否存在事实矛盾、年龄或时间线冲突、关系冲突、角色语气偏离、开场白内容与 online/offline 类型不匹配、不可视觉化的外貌描述、用户变量误用，以及替 {{user}} 决定言行或心理的问题。只返回合法 JSON 数组，每项包含 section, issue, suggestion。section 只能是 basic、persona、greetings、biography、appearance、world、conflicts 之一；issue 用简洁中文说明一个具体问题；suggestion 只说明怎样修复这一项，不得要求重写其他内容。一个对象只能包含一个问题；没有发现问题时返回空数组。不要改写原文，不要输出 Markdown 或解释。`;
 
 const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行简短回复。";
 const VARIABLE_SYSTEM = "变量规范：角色设定、人物小传、世界书和叙事描述中使用角色的真实姓名，不使用 char 或 {{char}} 作为占位；{{user}} 始终代表与角色互动的用户，必须原样保留双花括号变量，不要替 {{user}} 决定言行、台词、心理或过去。";
@@ -33,7 +33,7 @@ function revisionSystem(section?: RevisionSection) {
     case "basic":
       return `${shared} 只返回合法 JSON 对象，包含 name, gender, note, nickname, signature, age, suffix, language 八个字符串字段。`;
     case "greetings":
-      return `${shared} 只返回合法 JSON 字符串数组，保留当前全部开场白，并根据用户建议增删或改写任意数量；至少包含 1 条。保持角色语气，不替用户决定行为、心理或台词。`;
+      return `${shared} 只返回合法 JSON 对象，包含 greetings 字符串数组和 greetingModes 数组。两个数组必须等长，greetingModes 每项只能是 online 或 offline。保留当前全部开场白及其类型，并根据用户建议增删或改写任意数量；至少包含 1 条。线上聊天要符合消息、电话、视频或社交平台的远程互动方式；线下聊天要包含同场环境、动作与现场感。保持角色语气，不替用户决定行为、心理或台词。`;
     case "world":
       return `${shared} 只返回合法 JSON 数组。每项包含 title, keys, content, category, priority, enabled；保留仍适用的条目，并按建议增删或改写。`;
     case "persona":

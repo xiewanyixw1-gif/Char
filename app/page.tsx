@@ -8,6 +8,7 @@ type View = "archive" | "character" | "library" | "world" | "api";
 type Tone = "mist" | "warm" | "paper";
 type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
+type GreetingMode = "online" | "offline";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "check" | "test";
 
@@ -22,6 +23,7 @@ type CharacterDraft = {
   language: string;
   persona: string;
   greetings: string[];
+  greetingModes: GreetingMode[];
   biography: string;
   appearance: string;
   conflicts: string;
@@ -114,6 +116,7 @@ const EMPTY_DRAFT: CharacterDraft = {
   language: "中文",
   persona: "",
   greetings: [""],
+  greetingModes: ["offline"],
   biography: "",
   appearance: "",
   conflicts: "",
@@ -237,7 +240,7 @@ function uid() {
 }
 
 function cloneDraft(draft: CharacterDraft): CharacterDraft {
-  return { ...draft, greetings: [...draft.greetings] };
+  return { ...draft, greetings: [...draft.greetings], greetingModes: [...draft.greetingModes] };
 }
 
 function cloneEntries(entries: WorldEntry[]): WorldEntry[] {
@@ -246,6 +249,19 @@ function cloneEntries(entries: WorldEntry[]): WorldEntry[] {
 
 function freshDraft(): CharacterDraft {
   return cloneDraft(EMPTY_DRAFT);
+}
+
+function inferGreetingMode(text: string): GreetingMode {
+  return /消息|聊天|手机|屏幕|输入框|语音|视频|电话|已读|在线|头像|群聊|私聊|短信|邮件|app|微信|LINE/i.test(text) ? "online" : "offline";
+}
+
+function alignGreetingModes(greetings: string[], modes?: unknown): GreetingMode[] {
+  const rawModes = Array.isArray(modes) ? modes : [];
+  return greetings.map((greeting, index) => rawModes[index] === "online" || rawModes[index] === "offline" ? rawModes[index] as GreetingMode : inferGreetingMode(greeting));
+}
+
+function greetingModeLabel(mode: GreetingMode) {
+  return mode === "online" ? "线上聊天" : "线下聊天";
 }
 
 function revisionText(value: unknown) {
@@ -444,7 +460,8 @@ export default function Home() {
       let restoredCharacters = storedCharacters ? JSON.parse(storedCharacters) as CharacterRecord[] : [];
       if (!Array.isArray(restoredCharacters) || !restoredCharacters.length) {
         const parsedDraft = storedDraft ? JSON.parse(storedDraft) as Partial<CharacterDraft> : {};
-        const restoredDraft = { ...freshDraft(), ...parsedDraft, greetings: Array.isArray(parsedDraft.greetings) ? parsedDraft.greetings : [""], name: parsedDraft.name?.trim() || "char" };
+        const restoredGreetings = Array.isArray(parsedDraft.greetings) ? parsedDraft.greetings : [""];
+        const restoredDraft = { ...freshDraft(), ...parsedDraft, greetings: restoredGreetings, greetingModes: alignGreetingModes(restoredGreetings, parsedDraft.greetingModes), name: parsedDraft.name?.trim() || "char" };
         const initialBook: WorldBookRecord = { id: uid(), name: `${restoredDraft.name || "char"}的世界书`, entries: storedEntries ? JSON.parse(storedEntries) : [], updatedAt: new Date().toISOString() };
         restoredCharacters = [{
           id: uid(),
@@ -464,7 +481,8 @@ export default function Home() {
           ? item.worldBooks
           : [{ id: uid(), name: `${item.draft?.name || item.label || "char"}的世界书`, entries: existingEntries, updatedAt: item.updatedAt || new Date().toISOString() }];
         const activeBook = restoredBooks.find((book) => book.id === item.activeWorldBookId) ?? restoredBooks[0];
-        return { ...item, avatar: item.avatar || "", cover: item.cover || "", entries: activeBook.entries, worldBooks: restoredBooks, activeWorldBookId: activeBook.id };
+        const greetings = item.draft?.greetings?.length ? item.draft.greetings : [""];
+        return { ...item, avatar: item.avatar || "", cover: item.cover || "", draft: { ...freshDraft(), ...item.draft, greetings, greetingModes: alignGreetingModes(greetings, item.draft?.greetingModes) }, entries: activeBook.entries, worldBooks: restoredBooks, activeWorldBookId: activeBook.id };
       });
       const restoredActive = restoredCharacters.find((item) => item.id === storedActiveId) ?? restoredCharacters[0];
       const restoredActiveBook = restoredActive.worldBooks.find((book) => book.id === restoredActive.activeWorldBookId) ?? restoredActive.worldBooks[0];
@@ -472,7 +490,7 @@ export default function Home() {
       setActiveCharacterId(restoredActive.id);
       setCharacterAvatar(restoredActive.avatar || "");
       setCharacterCover(restoredActive.cover || "");
-      setDraft({ ...freshDraft(), ...restoredActive.draft, greetings: restoredActive.draft.greetings?.length ? restoredActive.draft.greetings : [""] });
+      setDraft(cloneDraft(restoredActive.draft));
       setWorldBooks(restoredActive.worldBooks);
       setActiveWorldBookId(restoredActiveBook.id);
       setEntries(cloneEntries(restoredActiveBook.entries));
@@ -783,17 +801,22 @@ export default function Home() {
         rawCharacters.forEach((raw, index) => {
           const cardData = raw.spec === "chara_card_v2" && raw.data && typeof raw.data === "object" ? raw.data as Record<string, unknown> : raw;
           const rawDraft = raw.draft && typeof raw.draft === "object" ? raw.draft as Partial<CharacterDraft> : cardData as Partial<CharacterDraft>;
+          const importedGreetings = Array.isArray(rawDraft.greetings)
+            ? rawDraft.greetings.filter((item): item is string => typeof item === "string")
+            : [typeof cardData.first_mes === "string" ? cardData.first_mes : "", ...(Array.isArray(cardData.alternate_greetings) ? cardData.alternate_greetings.filter((item): item is string => typeof item === "string") : [])];
           const importedDraft: CharacterDraft = {
             ...freshDraft(),
             ...rawDraft,
             name: typeof cardData.name === "string" ? cardData.name : rawDraft.name || `导入角色 ${characters.length + imported.length + index + 1}`,
             persona: typeof cardData.description === "string" ? cardData.description : rawDraft.persona || "",
             background: typeof cardData.scenario === "string" ? cardData.scenario : rawDraft.background || "",
-            greetings: Array.isArray(rawDraft.greetings)
-              ? rawDraft.greetings.filter((item): item is string => typeof item === "string")
-              : [typeof cardData.first_mes === "string" ? cardData.first_mes : "", ...(Array.isArray(cardData.alternate_greetings) ? cardData.alternate_greetings.filter((item): item is string => typeof item === "string") : [])],
+            greetings: importedGreetings,
+            greetingModes: alignGreetingModes(importedGreetings, rawDraft.greetingModes ?? (cardData.extensions as { char?: { greetingModes?: unknown } } | undefined)?.char?.greetingModes),
           };
-          if (!importedDraft.greetings.length) importedDraft.greetings = [""];
+          if (!importedDraft.greetings.length) {
+            importedDraft.greetings = [""];
+            importedDraft.greetingModes = ["offline"];
+          }
           const rawBooks = Array.isArray(raw.worldBooks) ? raw.worldBooks as WorldBookRecord[] : [];
           const fallbackEntries = Array.isArray(raw.entries) ? raw.entries as WorldEntry[] : Array.isArray(raw.worldBook) ? raw.worldBook as WorldEntry[] : [];
           const books = rawBooks.length ? rawBooks.map((book) => ({ ...book, id: uid(), entries: cloneEntries(Array.isArray(book.entries) ? book.entries : []) })) : [{ id: uid(), name: `${importedDraft.name}的世界书`, entries: cloneEntries(fallbackEntries), updatedAt: new Date().toISOString() }];
@@ -855,7 +878,8 @@ export default function Home() {
       }>;
       if (payload.format !== "char-workspace-backup-v1" || !Array.isArray(payload.characters) || !payload.characters.length) throw new Error("不是有效的 Char 完整备份");
       const restored = payload.characters.map((item, index) => {
-        const restoredDraft = { ...freshDraft(), ...item.draft, greetings: item.draft?.greetings?.length ? item.draft.greetings : [""] };
+        const restoredGreetings = item.draft?.greetings?.length ? item.draft.greetings : [""];
+        const restoredDraft = { ...freshDraft(), ...item.draft, greetings: restoredGreetings, greetingModes: alignGreetingModes(restoredGreetings, item.draft?.greetingModes) };
         const existingEntries = Array.isArray(item.entries) ? item.entries : [];
         const restoredBooks = Array.isArray(item.worldBooks) && item.worldBooks.length
           ? item.worldBooks
@@ -1025,17 +1049,21 @@ export default function Home() {
           ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}`
           : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}`),
       );
-      const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[] };
+      const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] };
       pushUndo("生成完整角色卡");
-      setDraft((current) => ({
-        ...current,
-        ...parsed,
-        source: current.source,
-        background: current.background,
-        greetings: Array.isArray(parsed.greetings) && parsed.greetings.length
+      setDraft((current) => {
+        const generatedGreetings = Array.isArray(parsed.greetings) && parsed.greetings.length
           ? parsed.greetings.filter((item): item is string => typeof item === "string")
-          : current.greetings,
-      }));
+          : current.greetings;
+        return {
+          ...current,
+          ...parsed,
+          source: current.source,
+          background: current.background,
+          greetings: generatedGreetings,
+          greetingModes: alignGreetingModes(generatedGreetings, parsed.greetingModes),
+        };
+      });
       setNotice("角色卡已生成；每个部分都可以填写建议并让 AI 单独优化");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "生成失败");
@@ -1071,7 +1099,7 @@ export default function Home() {
         language: draft.language,
       },
       persona: draft.persona,
-      greetings: draft.greetings,
+      greetings: { greetings: draft.greetings, greetingModes: draft.greetingModes },
       biography: draft.biography,
       appearance: draft.appearance,
       world: entries,
@@ -1094,9 +1122,15 @@ export default function Home() {
           return result;
         }, {});
       } else if (section === "greetings") {
-        const parsed = JSON.parse(cleanJsonText(text));
-        if (!Array.isArray(parsed)) throw new Error("开场白格式不正确，请重试");
-        previewValue = parsed.filter((item): item is string => typeof item === "string");
+        const parsed = JSON.parse(cleanJsonText(text)) as { greetings?: unknown; greetingModes?: unknown } | unknown[];
+        const rawGreetings = Array.isArray(parsed) ? parsed : parsed.greetings;
+        if (!Array.isArray(rawGreetings)) throw new Error("开场白格式不正确，请重试");
+        const revisedGreetings = rawGreetings.filter((item): item is string => typeof item === "string");
+        if (!revisedGreetings.length) throw new Error("开场白至少需要保留一条");
+        previewValue = {
+          greetings: revisedGreetings,
+          greetingModes: alignGreetingModes(revisedGreetings, Array.isArray(parsed) ? draft.greetingModes : parsed.greetingModes),
+        };
       } else if (section === "world") {
         const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
         if (!Array.isArray(parsed)) throw new Error("世界书格式不正确，请重试");
@@ -1146,7 +1180,12 @@ export default function Home() {
         next[greetingIndex] = String(value);
         updateDraft("greetings", next);
       } else {
-        updateDraft("greetings", value as string[]);
+        const revised = value as { greetings: string[]; greetingModes: GreetingMode[] };
+        setDraft((current) => ({
+          ...current,
+          greetings: revised.greetings,
+          greetingModes: alignGreetingModes(revised.greetings, revised.greetingModes),
+        }));
       }
     } else if (section === "world") {
       setEntries(cloneEntries(value as WorldEntry[]));
@@ -1172,10 +1211,15 @@ export default function Home() {
 
   const moveGreeting = (from: number, to: number) => {
     if (to < 0 || to >= draft.greetings.length || from === to) return;
-    const next = [...draft.greetings];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
-    updateDraft("greetings", next);
+    setDraft((current) => {
+      const greetings = [...current.greetings];
+      const modes = alignGreetingModes(current.greetings, current.greetingModes);
+      const [movedGreeting] = greetings.splice(from, 1);
+      const [movedMode] = modes.splice(from, 1);
+      greetings.splice(to, 0, movedGreeting);
+      modes.splice(to, 0, movedMode);
+      return { ...current, greetings, greetingModes: modes };
+    });
     setNotice("开场白顺序已调整");
   };
 
@@ -1186,10 +1230,39 @@ export default function Home() {
   };
 
   const duplicateGreeting = (index: number) => {
-    const next = [...draft.greetings];
-    next.splice(index + 1, 0, draft.greetings[index]);
-    updateDraft("greetings", next);
+    setDraft((current) => {
+      const greetings = [...current.greetings];
+      const modes = alignGreetingModes(current.greetings, current.greetingModes);
+      greetings.splice(index + 1, 0, current.greetings[index]);
+      modes.splice(index + 1, 0, modes[index]);
+      return { ...current, greetings, greetingModes: modes };
+    });
     setNotice(`已复制开场白 ${index + 1}`);
+  };
+
+  const addGreeting = (mode: GreetingMode) => {
+    setDraft((current) => ({
+      ...current,
+      greetings: [...current.greetings, ""],
+      greetingModes: [...alignGreetingModes(current.greetings, current.greetingModes), mode],
+    }));
+    setNotice(`已添加${greetingModeLabel(mode)}开场白`);
+  };
+
+  const updateGreetingMode = (index: number, mode: GreetingMode) => {
+    setDraft((current) => {
+      const greetingModes = alignGreetingModes(current.greetings, current.greetingModes);
+      greetingModes[index] = mode;
+      return { ...current, greetingModes };
+    });
+  };
+
+  const removeGreeting = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      greetings: current.greetings.filter((_, itemIndex) => itemIndex !== index),
+      greetingModes: alignGreetingModes(current.greetings, current.greetingModes).filter((_, itemIndex) => itemIndex !== index),
+    }));
   };
 
   const optimizeGreeting = async (index: number) => {
@@ -1200,17 +1273,18 @@ export default function Home() {
     try {
       const text = await callModel(
         "revise",
-        withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前仅这一条开场白】\n${JSON.stringify([draft.greetings[index]])}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，并仅返回包含一个字符串的 JSON 数组。`),
+        withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【当前仅这一条开场白】\n${JSON.stringify({ greetings: [draft.greetings[index]], greetingModes: [draft.greetingModes[index] || inferGreetingMode(draft.greetings[index])] })}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，保留“${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(draft.greetings[index]))}”类型，并仅返回包含 greetings 与 greetingModes 的 JSON 对象。`),
         "greetings",
       );
-      const parsed = JSON.parse(cleanJsonText(text));
-      if (!Array.isArray(parsed) || typeof parsed[0] !== "string") throw new Error("单条开场白格式不正确，请重试");
+      const parsed = JSON.parse(cleanJsonText(text)) as { greetings?: unknown } | unknown[];
+      const rawGreetings = Array.isArray(parsed) ? parsed : parsed.greetings;
+      if (!Array.isArray(rawGreetings) || typeof rawGreetings[0] !== "string") throw new Error("单条开场白格式不正确，请重试");
       setRevisionPreview({
         section: "greetings",
         label: `开场白 ${index + 1}`,
         before: draft.greetings[index],
-        after: parsed[0],
-        value: parsed[0],
+        after: rawGreetings[0],
+        value: rawGreetings[0],
         greetingIndex: index,
       });
       setNotice("单条开场白优化完成，请预览后决定是否应用");
@@ -1318,7 +1392,7 @@ export default function Home() {
   const characterText = () => [
     `【01 基础信息】\n名字：${draft.name || "未提供"}\n性别：${draft.gender || "未提供"}\n备注：${draft.note || "未提供"}\n网名：${draft.nickname || "未提供"}\n签名：${draft.signature || "未提供"}\n年龄：${draft.age || "未提供"}\n被拍后缀：${draft.suffix || "未提供"}\n文化母语：${draft.language || "未提供"}`,
     `【02 人设正文】\n${draft.persona || "未提供"}`,
-    `【03 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}\n${item || "未提供"}`).join("\n\n")}`,
+    `【03 开场白】\n${draft.greetings.map((item, index) => `开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n${item || "未提供"}`).join("\n\n")}`,
     `【04 人物小传】\n${draft.biography || "未提供"}`,
     `【05 生图外貌】\n${draft.appearance || "未提供"}`,
     `【06 世界书】\n${entries.map((item) => `${item.title}｜${item.keys}\n${item.content}`).join("\n\n") || "未提供"}`,
@@ -1329,7 +1403,7 @@ export default function Home() {
     `# ${draft.name || "char"}`,
     `## 基础信息\n\n- 性别：${draft.gender || "未提供"}\n- 年龄：${draft.age || "未提供"}\n- 网名：${draft.nickname || "未提供"}\n- 签名：${draft.signature || "未提供"}\n- 被拍后缀：${draft.suffix || "未提供"}\n- 文化母语：${draft.language || "未提供"}\n- 备注：${draft.note || "未提供"}`,
     `## 人设正文\n\n${draft.persona || "未提供"}`,
-    `## 开场白\n\n${draft.greetings.map((item, index) => `### 开场白 ${index + 1}\n\n${item || "未提供"}`).join("\n\n")}`,
+    `## 开场白\n\n${draft.greetings.map((item, index) => `### 开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n\n${item || "未提供"}`).join("\n\n")}`,
     `## 人物小传\n\n${draft.biography || "未提供"}`,
     `## 生图外貌\n\n${draft.appearance || "未提供"}`,
     `## 世界书\n\n${entries.map((item) => `### ${item.title}\n\n关键词：${item.keys || "无"}\n\n${item.content}`).join("\n\n") || "未提供"}`,
@@ -1364,7 +1438,7 @@ export default function Home() {
           tags: [],
           creator: "Char",
           character_version: "1.0",
-          extensions: { char: { conflicts: draft.conflicts, worldBook: entries } },
+          extensions: { char: { conflicts: draft.conflicts, worldBook: entries, greetingModes: draft.greetingModes } },
         },
       };
       saveFile(`${draft.name || "char"}_SillyTavern_V2.json`, JSON.stringify(card, null, 2), "application/json");
@@ -1855,8 +1929,9 @@ export default function Home() {
               <div className="section-heading">
                 <div><span>STEP 04</span><h2>开场白</h2></div>
                 <div className="section-heading-actions">
-                  <button className="copy-button" onClick={() => copyText("全部开场白", draft.greetings.filter((item) => item.trim()).map((item, index) => `开场白 ${index + 1}\n${item}`).join("\n\n"))} disabled={!draft.greetings.some((item) => item.trim())}>复制全部</button>
-                  <button className="mini-button" onClick={() => updateDraft("greetings", [...draft.greetings, ""])}>＋ 添加情境</button>
+                  <button className="copy-button" onClick={() => copyText("全部开场白", draft.greetings.map((item, index) => item.trim() ? `开场白 ${index + 1}｜${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(item))}\n${item}` : "").filter(Boolean).join("\n\n"))} disabled={!draft.greetings.some((item) => item.trim())}>复制全部</button>
+                  <button className="mini-button" onClick={() => addGreeting("online")}>＋ 线上开场</button>
+                  <button className="mini-button" onClick={() => addGreeting("offline")}>＋ 线下开场</button>
                 </div>
               </div>
               <div className="greeting-list">
@@ -1872,6 +1947,16 @@ export default function Home() {
                   >
                     <span title="拖拽排序">{String(index + 1).padStart(2, "0")}</span>
                     <div className="greeting-editor">
+                      <div className="greeting-type-row">
+                        <span className={`greeting-mode ${draft.greetingModes[index] || inferGreetingMode(greeting)}`}>{greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(greeting))}</span>
+                        <label>
+                          <span>对话方式</span>
+                          <select value={draft.greetingModes[index] || inferGreetingMode(greeting)} onChange={(event) => updateGreetingMode(index, event.target.value as GreetingMode)}>
+                            <option value="online">线上聊天</option>
+                            <option value="offline">线下聊天</option>
+                          </select>
+                        </label>
+                      </div>
                       <textarea
                         aria-label={`开场白 ${index + 1}`}
                         rows={5}
@@ -1894,7 +1979,7 @@ export default function Home() {
                       <button onClick={() => duplicateGreeting(index)}>复制一条</button>
                       <button className="copy-button" onClick={() => copyText(`开场白 ${index + 1}`, greeting)} disabled={!greeting.trim()}>复制</button>
                       {draft.greetings.length > 1 && (
-                        <button className="greeting-delete" aria-label={`删除开场白 ${index + 1}`} onClick={() => updateDraft("greetings", draft.greetings.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+                        <button className="greeting-delete" aria-label={`删除开场白 ${index + 1}`} onClick={() => removeGreeting(index)}>×</button>
                       )}
                     </div>
                   </div>
