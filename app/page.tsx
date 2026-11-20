@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/set-state-in-effect, @next/next/no-img-element -- localStorage hydration intentionally updates client state; user-selected data URLs cannot use the optimized image loader */
 
-import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type View = "archive" | "character" | "library" | "world" | "image" | "api";
 type Tone = "mist" | "warm" | "paper";
@@ -348,6 +348,10 @@ function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
 function cloneDraft(draft: CharacterDraft): CharacterDraft {
   return { ...draft, greetings: [...draft.greetings], greetingModes: [...draft.greetingModes] };
 }
@@ -679,6 +683,7 @@ export default function Home() {
   const [imagePrompt, setImagePrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("文字、水印、Logo、低清晰度、畸形手部、重复肢体");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [activeGeneratedImageIndex, setActiveGeneratedImageIndex] = useState(0);
   const [imagePreview, setImagePreview] = useState<{ image: GeneratedImage; index: number; saveHint: boolean } | null>(null);
   const [imageCount, setImageCount] = useState(1);
   const [selectedImageEmotions, setSelectedImageEmotions] = useState<string[]>(["自然"]);
@@ -712,6 +717,12 @@ export default function Home() {
   const [backgroundImage, setBackgroundImage] = useState("");
   const [ready, setReady] = useState(false);
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
+  const generatedObjectUrls = useRef<string[]>([]);
+
+  const releaseGeneratedObjectUrls = () => {
+    generatedObjectUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    generatedObjectUrls.current = [];
+  };
 
   useEffect(() => {
     try {
@@ -843,10 +854,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
+    releaseGeneratedObjectUrls();
     setGeneratedImages([]);
+    setActiveGeneratedImageIndex(0);
     setImagePreview(null);
     setImagePrompt("");
   }, [activeCharacterId, ready]);
+
+  useEffect(() => () => releaseGeneratedObjectUrls(), []);
 
   useEffect(() => {
     if (!ready) return;
@@ -881,6 +896,7 @@ export default function Home() {
   }, [draft]);
 
   const activeWorldBook = useMemo(() => worldBooks.find((book) => book.id === activeWorldBookId) ?? worldBooks[0], [activeWorldBookId, worldBooks]);
+  const activeGeneratedImage = generatedImages[activeGeneratedImageIndex] ?? generatedImages[0];
 
   const enabledLibraryText = useMemo(() => library
     .filter((item) => item.enabled && item.content.trim())
@@ -1391,7 +1407,9 @@ export default function Home() {
       return;
     }
     setImageBusy(true);
+    releaseGeneratedObjectUrls();
     setGeneratedImages([]);
+    setActiveGeneratedImageIndex(0);
     setImagePreview(null);
     const emotions = selectedImageEmotions.length ? selectedImageEmotions : ["自然"];
     const requests = Array.from({ length: imageCount }, (_, index) => {
@@ -1406,27 +1424,46 @@ export default function Home() {
       const failed: string[] = [];
       for (const [index, request] of requests.entries()) {
         setNotice(`正在生成第 ${index + 1}/${requests.length} 张 · ${request.emotion}…`);
-        try {
-          const response = await fetch("/api/image", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
-          });
-          const rawText = await response.text();
-          let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
+        let generated: GeneratedImage | null = null;
+        let lastError = "角色图片生成失败";
+        for (let attempt = 0; attempt < 3 && !generated; attempt += 1) {
           try {
-            payload = JSON.parse(rawText) as typeof payload;
-          } catch {
-            throw new Error(response.status === 502 || response.status === 504
-              ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
-              : `网站生图接口返回了无法读取的内容（${response.status}）`);
+            const response = await fetch("/api/image", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
+            });
+            const rawText = await response.text();
+            let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
+            try {
+              payload = JSON.parse(rawText) as typeof payload;
+            } catch {
+              throw new Error(response.status === 502 || response.status === 504
+                ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
+                : `网站生图接口返回了无法读取的内容（${response.status}）`);
+            }
+            if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
+            let imageUrl = payload.imageUrl;
+            const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
+            if (localBlob) {
+              imageUrl = URL.createObjectURL(localBlob);
+              generatedObjectUrls.current.push(imageUrl);
+            }
+            generated = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion };
+          } catch (error) {
+            lastError = error instanceof Error ? error.message : "角色图片生成失败";
+            if (attempt < 2) {
+              setNotice(`第 ${index + 1} 张暂时失败，${attempt + 1}/2 次自动重试中…`);
+              await wait(2500 * (attempt + 1));
+            }
           }
-          if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
-          completed.push({ id: uid(), imageUrl: payload.imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion });
-          setGeneratedImages([...completed]);
-        } catch (error) {
-          failed.push(error instanceof Error ? error.message : "角色图片生成失败");
         }
+        if (generated) {
+          completed.push(generated);
+          setGeneratedImages([...completed]);
+          if (completed.length === 1) setActiveGeneratedImageIndex(0);
+        } else failed.push(lastError);
+        if (index < requests.length - 1) await wait(1800);
       }
       if (!completed.length) {
         throw new Error(failed[0] || "角色图片生成失败");
@@ -2850,19 +2887,20 @@ export default function Home() {
                 <button className="secondary-button" onClick={fillCharacterImagePrompt}>从角色资料填充提示词</button>
               </article>
 
-              <div className={`image-result-gallery ${generatedImages.length === 1 ? "single" : ""}`}>
-                {generatedImages.length ? generatedImages.map((image, index) => (
-                  <article className="image-result-card" key={image.id}>
-                    <img src={image.imageUrl} alt={`${draft.name || "角色"}${image.emotion}情绪生成图`} />
-                    <span className="image-emotion-label">第 {index + 1}/{generatedImages.length} 张 · {image.emotion}</span>
+              <div className="image-result-gallery">
+                {activeGeneratedImage ? (<>
+                  {generatedImages.length > 1 && <nav className="image-result-tabs" aria-label="切换生成图片">{generatedImages.map((image, index) => <button key={image.id} className={index === activeGeneratedImageIndex ? "active" : ""} onClick={() => setActiveGeneratedImageIndex(index)}><span>{index + 1}</span>{image.emotion}</button>)}</nav>}
+                  <article className="image-result-card" key={activeGeneratedImage.id}>
+                    <img src={activeGeneratedImage.imageUrl} alt={`${draft.name || "角色"}${activeGeneratedImage.emotion}情绪生成图`} />
+                    <span className="image-emotion-label">第 {activeGeneratedImageIndex + 1}/{generatedImages.length} 张 · {activeGeneratedImage.emotion}</span>
                     <div className="image-result-actions">
-                      <button onClick={() => applyGeneratedImage(image, "avatar")}>设为头像</button>
-                      <button onClick={() => applyGeneratedImage(image, "cover")}>设为卡片背景</button>
-                      <button onClick={() => downloadGeneratedImage(image, index)}>保存图片</button>
-                      <button onClick={() => setImagePreview({ image, index, saveHint: false })}>查看大图</button>
+                      <button onClick={() => applyGeneratedImage(activeGeneratedImage, "avatar")}>设为头像</button>
+                      <button onClick={() => applyGeneratedImage(activeGeneratedImage, "cover")}>设为卡片背景</button>
+                      <button onClick={() => downloadGeneratedImage(activeGeneratedImage, activeGeneratedImageIndex)}>保存图片</button>
+                      <button onClick={() => setImagePreview({ image: activeGeneratedImage, index: activeGeneratedImageIndex, saveHint: false })}>查看大图</button>
                     </div>
                   </article>
-                )) : (
+                </>) : (
                   <article className="image-result-card image-result-placeholder"><div className="image-result-empty"><span>IMAGE</span><b>生成结果会显示在这里</b><small>可一次生成多张，并分别保存图片</small></div></article>
                 )}
               </div>
