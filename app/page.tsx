@@ -459,11 +459,17 @@ type ImageSaveResult = "shared" | "downloaded" | "preview" | "cancelled";
 function dataUrlBlob(imageUrl: string) {
   const match = imageUrl.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
   if (!match) return null;
-  const mimeType = match[1] || "image/png";
-  const raw = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
-  const bytes = new Uint8Array(raw.length);
-  for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
-  return new Blob([bytes], { type: mimeType });
+  try {
+    const mimeType = match[1] || "image/png";
+    const normalized = match[3].replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+    const raw = match[2] ? atob(padded) : decodeURIComponent(match[3]);
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+    return new Blob([bytes], { type: mimeType });
+  } catch {
+    return null;
+  }
 }
 
 async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSaveResult> {
@@ -673,7 +679,7 @@ export default function Home() {
   const [imagePrompt, setImagePrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("文字、水印、Logo、低清晰度、畸形手部、重复肢体");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
-  const [savePreviewImage, setSavePreviewImage] = useState<GeneratedImage | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ image: GeneratedImage; index: number; saveHint: boolean } | null>(null);
   const [imageCount, setImageCount] = useState(1);
   const [selectedImageEmotions, setSelectedImageEmotions] = useState<string[]>(["自然"]);
   const [imageBusy, setImageBusy] = useState(false);
@@ -838,6 +844,7 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     setGeneratedImages([]);
+    setImagePreview(null);
     setImagePrompt("");
   }, [activeCharacterId, ready]);
 
@@ -1385,6 +1392,7 @@ export default function Home() {
     }
     setImageBusy(true);
     setGeneratedImages([]);
+    setImagePreview(null);
     const emotions = selectedImageEmotions.length ? selectedImageEmotions : ["自然"];
     const requests = Array.from({ length: imageCount }, (_, index) => {
       const emotion = emotions[index % emotions.length];
@@ -1455,13 +1463,24 @@ export default function Home() {
   };
 
   const downloadGeneratedImage = async (image: GeneratedImage, index: number) => {
-    const result = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}_${index + 1}.png`);
-    if (result === "shared") setNotice("系统分享面板已打开，请选择“存储图像”保存到相册");
-    if (result === "downloaded") setNotice(`第 ${index + 1} 张图片已下载`);
-    if (result === "preview") {
-      setSavePreviewImage(image);
-      setNotice("请长按大图并选择“存储到照片”或“存储图像”");
+    try {
+      const result = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}_${index + 1}.png`);
+      if (result === "shared") setNotice("系统分享面板已打开，请选择“存储图像”保存到相册");
+      if (result === "downloaded") setNotice(`第 ${index + 1} 张图片已下载`);
+      if (result === "preview") {
+        setImagePreview({ image, index, saveHint: true });
+        setNotice("请长按大图并选择“存储到照片”或“存储图像”");
+      }
+    } catch {
+      setImagePreview({ image, index, saveHint: true });
+      setNotice("浏览器无法直接保存，已打开站内大图，请长按保存到相册");
     }
+  };
+
+  const moveImagePreview = (direction: -1 | 1) => {
+    if (!imagePreview || !generatedImages.length) return;
+    const index = Math.min(generatedImages.length - 1, Math.max(0, imagePreview.index + direction));
+    setImagePreview({ image: generatedImages[index], index, saveHint: imagePreview.saveHint });
   };
 
   const toggleImageEmotion = (emotion: string) => {
@@ -2835,12 +2854,12 @@ export default function Home() {
                 {generatedImages.length ? generatedImages.map((image, index) => (
                   <article className="image-result-card" key={image.id}>
                     <img src={image.imageUrl} alt={`${draft.name || "角色"}${image.emotion}情绪生成图`} />
-                    <span className="image-emotion-label">{image.emotion}</span>
+                    <span className="image-emotion-label">第 {index + 1}/{generatedImages.length} 张 · {image.emotion}</span>
                     <div className="image-result-actions">
                       <button onClick={() => applyGeneratedImage(image, "avatar")}>设为头像</button>
                       <button onClick={() => applyGeneratedImage(image, "cover")}>设为卡片背景</button>
                       <button onClick={() => downloadGeneratedImage(image, index)}>保存图片</button>
-                      <a href={image.imageUrl} target="_blank" rel="noreferrer">打开原图</a>
+                      <button onClick={() => setImagePreview({ image, index, saveHint: false })}>查看大图</button>
                     </div>
                   </article>
                 )) : (
@@ -2872,12 +2891,13 @@ export default function Home() {
               <label><span>快速切换</span><select value={imageApi.id ?? ""} onChange={(event) => { const selected = savedImageApis.find((preset) => preset.id === event.target.value); if (selected) chooseSavedImageApi(selected); }}><option value="">选择已保存的生图站点</option>{savedImageApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model}</option>)}</select></label>
               <button onClick={() => { setApiKind("image"); setView("api"); }}>管理生图 API</button>
             </section>
-            {savePreviewImage && (
-              <div className="image-save-overlay" role="dialog" aria-modal="true" aria-label="保存生成图片" onClick={() => setSavePreviewImage(null)}>
+            {imagePreview && (
+              <div className="image-save-overlay" role="dialog" aria-modal="true" aria-label="查看生成图片" onClick={() => setImagePreview(null)}>
                 <div className="image-save-preview" onClick={(event) => event.stopPropagation()}>
-                  <div><span>SAVE IMAGE</span><b>长按图片保存到相册</b><button onClick={() => setSavePreviewImage(null)} aria-label="关闭保存图片预览">×</button></div>
-                  <img src={savePreviewImage.imageUrl} alt={`${draft.name || "角色"}${savePreviewImage.emotion}情绪原图`} />
-                  <p>在 iPhone 上长按图片，选择“存储到照片”或“存储图像”。如果系统分享面板可用，下次点击“保存图片”会直接打开分享面板。</p>
+                  <div className="image-save-heading"><span>{imagePreview.saveHint ? "SAVE IMAGE" : "IMAGE PREVIEW"}</span><b>第 {imagePreview.index + 1}/{generatedImages.length} 张 · {imagePreview.image.emotion}</b><button onClick={() => setImagePreview(null)} aria-label="关闭图片预览">×</button></div>
+                  <img src={imagePreview.image.imageUrl} alt={`${draft.name || "角色"}${imagePreview.image.emotion}情绪原图`} />
+                  {generatedImages.length > 1 && <div className="image-preview-controls"><button onClick={() => moveImagePreview(-1)} disabled={imagePreview.index === 0}>← 上一张</button><span>{imagePreview.index + 1} / {generatedImages.length}</span><button onClick={() => moveImagePreview(1)} disabled={imagePreview.index === generatedImages.length - 1}>下一张 →</button></div>}
+                  <p>{imagePreview.saveHint ? "在 iPhone 上长按图片，选择“存储到照片”或“存储图像”。" : "使用上一张、下一张依次查看全部结果；需要保存时关闭预览后点击对应图片的“保存图片”。"}</p>
                 </div>
               </div>
             )}
