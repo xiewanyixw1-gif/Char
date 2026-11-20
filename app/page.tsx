@@ -1365,25 +1365,38 @@ export default function Home() {
     });
     setNotice(`正在生成 ${imageCount} 张图片，情绪：${requests.map((item) => item.emotion).join("、")}…`);
     try {
-      const results = await Promise.allSettled(requests.map(async ({ emotion, prompt }) => {
-        const response = await fetch("/api/image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, negativePrompt, preset: imageApi }),
-        });
-        const payload = await response.json() as { imageUrl?: string; revisedPrompt?: string; error?: string };
-        if (!response.ok || !payload.imageUrl) throw new Error(payload.error || "生图接口没有返回图片");
-        return { id: uid(), imageUrl: payload.imageUrl, revisedPrompt: payload.revisedPrompt, emotion } satisfies GeneratedImage;
-      }));
-      const completed = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
-      const failed = results.filter((result) => result.status === "rejected");
+      const completed: GeneratedImage[] = [];
+      const failed: string[] = [];
+      for (const [index, request] of requests.entries()) {
+        setNotice(`正在生成第 ${index + 1}/${requests.length} 张 · ${request.emotion}…`);
+        try {
+          const response = await fetch("/api/image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
+          });
+          const rawText = await response.text();
+          let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
+          try {
+            payload = JSON.parse(rawText) as typeof payload;
+          } catch {
+            throw new Error(response.status === 502 || response.status === 504
+              ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
+              : `网站生图接口返回了无法读取的内容（${response.status}）`);
+          }
+          if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
+          completed.push({ id: uid(), imageUrl: payload.imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion });
+          setGeneratedImages([...completed]);
+        } catch (error) {
+          failed.push(error instanceof Error ? error.message : "角色图片生成失败");
+        }
+      }
       if (!completed.length) {
-        const firstFailure = failed[0] as PromiseRejectedResult | undefined;
-        throw new Error(firstFailure?.reason instanceof Error ? firstFailure.reason.message : "角色图片生成失败");
+        throw new Error(failed[0] || "角色图片生成失败");
       }
       setGeneratedImages(completed);
       setNotice(failed.length
-        ? `已生成 ${completed.length} 张，另有 ${failed.length} 张失败，可再次生成补齐`
+        ? `已生成 ${completed.length} 张，另有 ${failed.length} 张失败：${failed[0]}`
         : `“${draft.name || "当前角色"}”的 ${completed.length} 张图片已生成`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "角色图片生成失败";

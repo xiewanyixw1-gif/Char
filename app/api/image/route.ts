@@ -47,7 +47,37 @@ function normalizedModelsEndpoint(rawEndpoint: string, rawModelsEndpoint: string
 
 function errorMessage(payload: Record<string, unknown>) {
   const error = payload.error as { message?: string } | string | undefined;
-  return typeof error === "string" ? error : error?.message;
+  const direct = payload.message ?? payload.detail ?? payload.msg;
+  return typeof error === "string" ? error : error?.message ?? (typeof direct === "string" ? direct : undefined);
+}
+
+function imageCandidate(value: unknown, defaultMime = "image/png"): string {
+  if (typeof value === "string") {
+    const candidate = value.trim();
+    if (/^data:image\//i.test(candidate) || /^https:\/\//i.test(candidate)) return candidate;
+    if (candidate.length > 200 && /^[A-Za-z0-9+/=_-]+$/.test(candidate)) return `data:${defaultMime};base64,${candidate}`;
+    return "";
+  }
+  if (!value || typeof value !== "object") return "";
+  const item = value as Record<string, unknown>;
+  const mimeType = typeof item.mime_type === "string" ? item.mime_type : typeof item.mimeType === "string" ? item.mimeType : defaultMime;
+  const base64 = item.b64_json ?? item.base64 ?? item.image_base64 ?? item.image;
+  const url = item.url ?? item.image_url ?? item.imageUrl;
+  return imageCandidate(base64, mimeType) || imageCandidate(url, mimeType);
+}
+
+function extractImage(payload: Record<string, unknown>) {
+  const groups = [payload.data, payload.images, payload.output, payload.artifacts, payload.result, payload.image];
+  const candidates = [payload, ...groups.flatMap((group) => Array.isArray(group) ? group : group === undefined ? [] : [group])];
+  for (const candidate of candidates) {
+    const imageUrl = imageCandidate(candidate);
+    if (imageUrl) {
+      const item = candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : {};
+      const revisedPrompt = typeof item.revised_prompt === "string" ? item.revised_prompt : typeof item.revisedPrompt === "string" ? item.revisedPrompt : undefined;
+      return { imageUrl, revisedPrompt };
+    }
+  }
+  return null;
 }
 
 export async function POST(request: Request) {
@@ -133,21 +163,33 @@ export async function POST(request: Request) {
       body: JSON.stringify(upstreamBody),
       signal: controller.signal,
     });
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok) return NextResponse.json({ error: errorMessage(payload) || `生图接口返回 ${response.status}` }, { status: response.status < 500 ? response.status : 502 });
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (response.ok && contentType.startsWith("image/")) {
+      const base64 = Buffer.from(await response.arrayBuffer()).toString("base64");
+      return NextResponse.json({ imageUrl: `data:${contentType.split(";")[0]};base64,${base64}` });
+    }
 
-    const data = Array.isArray(payload.data) ? payload.data as Array<Record<string, unknown>> : [];
-    const images = Array.isArray(payload.images) ? payload.images as Array<Record<string, unknown>> : [];
-    const output = Array.isArray(payload.output) ? payload.output as Array<Record<string, unknown>> : [];
-    const first = data[0] ?? images[0] ?? output[0] ?? {};
-    const base64 = typeof first.b64_json === "string" ? first.b64_json : typeof first.base64 === "string" ? first.base64 : "";
-    const url = typeof first.url === "string" ? first.url : typeof first.image_url === "string" ? first.image_url : "";
-    const mimeType = typeof first.mime_type === "string" ? first.mime_type : "image/png";
-    const imageUrl = base64 ? `data:${mimeType};base64,${base64}` : url;
-    const revisedPrompt = typeof first.revised_prompt === "string" ? first.revised_prompt : undefined;
+    const rawText = await response.text();
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(rawText) as Record<string, unknown>;
+    } catch {
+      if (response.ok) {
+        const directImage = imageCandidate(rawText, contentType.startsWith("image/") ? contentType.split(";")[0] : "image/png");
+        if (directImage) return NextResponse.json({ imageUrl: directImage });
+      }
+    }
+    if (!response.ok) {
+      const plainError = rawText.trim() && !/^</.test(rawText.trim()) ? rawText.trim().slice(0, 500) : "";
+      return NextResponse.json({ error: errorMessage(payload) || plainError || `生图接口返回 ${response.status}` }, { status: response.status < 500 ? response.status : 502 });
+    }
 
-    if (!imageUrl) return NextResponse.json({ error: "接口已响应，但没有返回可识别的图片 URL 或 base64 数据" }, { status: 502 });
-    return NextResponse.json({ imageUrl, revisedPrompt });
+    const extracted = extractImage(payload);
+    if (!extracted) {
+      const keys = Object.keys(payload).slice(0, 8).join("、");
+      return NextResponse.json({ error: `接口已响应，但没有返回可识别的图片。返回字段：${keys || "空响应"}` }, { status: 502 });
+    }
+    return NextResponse.json(extracted);
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError" ? "生图超时，请稍后重试或降低图片尺寸" : "无法连接生图接口，请检查地址、模型、密钥和网络";
     return NextResponse.json({ error: message }, { status: 502 });
