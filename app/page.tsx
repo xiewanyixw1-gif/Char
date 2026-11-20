@@ -481,6 +481,44 @@ async function saveImageUrl(imageUrl: string, filename: string) {
   return revokeUrl || imageUrl.startsWith("data:");
 }
 
+async function optimizeImageForStorage(imageUrl: string, target: "avatar" | "cover") {
+  let sourceUrl = imageUrl;
+  let temporaryUrl = "";
+  if (!imageUrl.startsWith("data:")) {
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error("无法读取远程图片");
+    temporaryUrl = URL.createObjectURL(await response.blob());
+    sourceUrl = temporaryUrl;
+  }
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("图片解码失败"));
+      element.src = sourceUrl;
+    });
+    const maxEdge = target === "avatar" ? 512 : 1280;
+    const maxCharacters = target === "avatar" ? 360_000 : 720_000;
+    const initialScale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const scale = initialScale * Math.pow(0.86, attempt);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("当前浏览器无法处理图片");
+      context.fillStyle = "#f2f3f2";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const optimized = canvas.toDataURL("image/jpeg", Math.max(0.5, 0.84 - attempt * 0.07));
+      if (optimized.length <= maxCharacters || attempt === 5) return optimized;
+    }
+    throw new Error("图片压缩失败");
+  } finally {
+    if (temporaryUrl) URL.revokeObjectURL(temporaryUrl);
+  }
+}
+
 function imageFileToDataUrl(file: File, maxBytes: number) {
   return new Promise<string>((resolve, reject) => {
     if (!file.type.startsWith("image/")) {
@@ -752,7 +790,11 @@ export default function Home() {
         const next = current.map((item) => item.id === activeCharacterId
           ? { ...item, label: draft.name.trim() || item.label || "char", avatar: characterAvatar, cover: characterCover, draft: cloneDraft(draft), entries: cloneEntries(entries), worldBooks: syncedBooks, activeWorldBookId, updatedAt: savedAt.toISOString() }
           : item);
-        localStorage.setItem("char-characters", JSON.stringify(next));
+        try {
+          localStorage.setItem("char-characters", JSON.stringify(next));
+        } catch {
+          return current;
+        }
         return next;
       });
       localStorage.setItem("char-active-character", activeCharacterId);
@@ -993,7 +1035,13 @@ export default function Home() {
       const dataUrl = await imageFileToDataUrl(file, kind === "avatar" ? 750_000 : 1_200_000);
       setCharacters((current) => {
         const next = current.map((item) => item.id === characterId ? { ...item, [kind]: dataUrl, updatedAt: new Date().toISOString() } : item);
-        if (ready) localStorage.setItem("char-characters", JSON.stringify(next));
+        if (ready) {
+          try {
+            localStorage.setItem("char-characters", JSON.stringify(next));
+          } catch {
+            return current;
+          }
+        }
         return next;
       });
       if (characterId === activeCharacterId) {
@@ -1346,10 +1394,22 @@ export default function Home() {
     }
   };
 
-  const applyGeneratedImage = (image: GeneratedImage, target: "avatar" | "cover") => {
-    if (target === "avatar") setCharacterAvatar(image.imageUrl);
-    else setCharacterCover(image.imageUrl);
-    setNotice(`已将生成图片设为“${draft.name || "当前角色"}”的${target === "avatar" ? "头像" : "卡片背景"}`);
+  const applyGeneratedImage = async (image: GeneratedImage, target: "avatar" | "cover") => {
+    setNotice(`正在为角色${target === "avatar" ? "头像" : "卡片背景"}优化图片…`);
+    try {
+      const optimized = await optimizeImageForStorage(image.imageUrl, target);
+      if (target === "avatar") setCharacterAvatar(optimized);
+      else setCharacterCover(optimized);
+      setNotice(`已压缩并设为“${draft.name || "当前角色"}”的${target === "avatar" ? "头像" : "卡片背景"}，原图仍可单独保存`);
+    } catch (error) {
+      if (!image.imageUrl.startsWith("data:")) {
+        if (target === "avatar") setCharacterAvatar(image.imageUrl);
+        else setCharacterCover(image.imageUrl);
+        setNotice("图片站点不允许压缩读取，已使用原图链接；建议同时保存原图备份");
+        return;
+      }
+      setNotice(error instanceof Error ? `${error.message}，请先保存原图后上传较小版本` : "图片处理失败，请先保存原图后上传较小版本");
+    }
   };
 
   const downloadGeneratedImage = async (image: GeneratedImage, index: number) => {
