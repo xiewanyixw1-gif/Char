@@ -85,6 +85,13 @@ type GeneratedImage = {
   revisedPrompt?: string;
 };
 
+type DirectModelRequest = {
+  target: string;
+  provider: Provider;
+  requestBody: Record<string, unknown>;
+  fallbackBody?: Record<string, unknown>;
+};
+
 type WorldBookRecord = {
   id: string;
   name: string;
@@ -387,6 +394,34 @@ function parseGeneratedJson<T>(text: string): T {
       ? "模型返回内容不完整，可能达到输出长度上限。请换用支持更长输出的模型，或暂时停用部分知识库后重试。"
       : "模型已响应，但没有返回可读取的 JSON。请在 API 页面点击“测试生成兼容”，或更换支持结构化输出的模型。");
   }
+}
+
+function directApiError(payload: Record<string, unknown>, rawText: string, status: number) {
+  const error = payload.error as { message?: string } | string | undefined;
+  const direct = payload.message ?? payload.detail ?? payload.msg;
+  const message = typeof error === "string" ? error : error?.message;
+  if (message) return message;
+  if (typeof direct === "string") return direct;
+  const plain = rawText.trim();
+  return plain && !/^</.test(plain) ? plain.slice(0, 500) : `上游 API 返回 ${status}`;
+}
+
+function directModelText(provider: Provider, payload: Record<string, unknown>) {
+  if (provider === "anthropic") {
+    const content = payload.content as Array<{ type?: string; text?: string }> | undefined;
+    return content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "";
+  }
+  if (provider === "gemini") {
+    const candidates = payload.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }> | undefined;
+    return candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
+  }
+  const choices = payload.choices as Array<{ text?: string; message?: { content?: string | Array<{ text?: string; content?: string }> } }> | undefined;
+  const content = choices?.[0]?.message?.content;
+  return typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((part) => part.text ?? part.content ?? "").join("\n")
+      : choices?.[0]?.text ?? (typeof payload.output_text === "string" ? payload.output_text : typeof payload.text === "string" ? payload.text : "");
 }
 
 function saveFile(filename: string, content: string, type = "text/plain;charset=utf-8") {
@@ -1322,6 +1357,59 @@ export default function Home() {
       setView("api");
       throw new Error("请先填写 API Key");
     }
+    let directBlocked = false;
+    try {
+      const preparedResponse = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, prompt, section, preset: api, direct: true }),
+      });
+      const preparedRaw = await preparedResponse.text();
+      const prepared = JSON.parse(preparedRaw) as DirectModelRequest & { error?: string };
+      if (!preparedResponse.ok) throw new Error(prepared.error || `生成准备失败 ${preparedResponse.status}`);
+      const directController = new AbortController();
+      const directTimeout = window.setTimeout(() => directController.abort(), 180000);
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (prepared.provider === "anthropic") {
+          headers["x-api-key"] = api.apiKey;
+          headers["anthropic-version"] = "2023-06-01";
+          headers["anthropic-dangerous-direct-browser"] = "true";
+        } else if (prepared.provider !== "gemini") {
+          headers.Authorization = `Bearer ${api.apiKey}`;
+        }
+        const sendDirect = (requestBody: Record<string, unknown>) => fetch(prepared.target, { method: "POST", headers, body: JSON.stringify(requestBody), signal: directController.signal });
+        let directResponse = await sendDirect(prepared.requestBody);
+        let directRaw = await directResponse.text();
+        if (!directResponse.ok && prepared.fallbackBody && (directResponse.status === 400 || directResponse.status === 422) && /response_format|json_object|max_tokens|unsupported|unknown (field|parameter)/i.test(directRaw)) {
+          directResponse = await sendDirect(prepared.fallbackBody);
+          directRaw = await directResponse.text();
+        }
+        let directPayload: Record<string, unknown> = {};
+        try {
+          directPayload = JSON.parse(directRaw) as Record<string, unknown>;
+        } catch {
+          directPayload = {};
+        }
+        if (!directResponse.ok) throw new Error(directApiError(directPayload, directRaw, directResponse.status));
+        const text = directModelText(prepared.provider, directPayload);
+        if (!text.trim()) throw new Error("API 已响应，但没有返回文本内容");
+        return text;
+      } catch (error) {
+        if (error instanceof TypeError || (error instanceof Error && /failed to fetch|networkerror|load failed|cors/i.test(error.message))) {
+          directBlocked = true;
+        } else if (error instanceof Error && error.name === "AbortError") {
+          throw new Error("API 直连等待超过 3 分钟，请更换更快的模型或站点");
+        } else {
+          throw error;
+        }
+      } finally {
+        window.clearTimeout(directTimeout);
+      }
+    } catch (error) {
+      if (!directBlocked) throw error;
+    }
+
     const response = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1334,7 +1422,12 @@ export default function Home() {
     } catch {
       if (!response.ok) throw new Error(`网站生成接口返回 ${response.status}，请稍后重试或检查部署状态`);
     }
-    if (!response.ok) throw new Error(payload.error || `生成接口返回 ${response.status}，请检查 API 配置`);
+    if (!response.ok) {
+      if (directBlocked && (response.status === 502 || response.status === 504)) {
+        throw new Error("该 API 站点禁止浏览器直连，同时 Netlify 代理等待超时。请在 API 站点开启 CORS，或改用允许网页直连的兼容站点。");
+      }
+      throw new Error(payload.error || `生成接口返回 ${response.status}，请检查 API 配置`);
+    }
     return payload.text ?? "";
   };
 

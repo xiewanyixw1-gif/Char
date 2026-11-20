@@ -7,6 +7,7 @@ type GenerateRequest = {
   mode?: "character-create" | "character-extract" | "character-create-core" | "character-create-story" | "character-create-visual" | "character-extract-core" | "character-extract-story" | "character-extract-visual" | "world" | "revise" | "check" | "test" | "test-json" | "models";
   section?: RevisionSection;
   prompt?: string;
+  direct?: boolean;
   preset?: {
     provider?: Provider;
     endpoint?: string;
@@ -223,6 +224,33 @@ export async function POST(request: Request) {
   const textRevision = mode === "revise" && ["persona", "biography", "appearance", "conflicts"].includes(section ?? "");
   const expectsJson = mode !== "test" && !textRevision;
   const outputTokens = mode === "test" || mode === "test-json" ? 128 : segmentedSystem ? 4500 : 8000;
+
+  if (body.direct) {
+    let requestBody: Record<string, unknown>;
+    let fallbackBody: Record<string, unknown> | undefined;
+    if (provider === "anthropic") {
+      requestBody = { model, max_tokens: outputTokens, temperature, system, messages: [{ role: "user", content: prompt }] };
+    } else if (provider === "gemini") {
+      requestBody = {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature, maxOutputTokens: outputTokens, responseMimeType: expectsJson ? "application/json" : "text/plain" },
+      };
+    } else {
+      requestBody = {
+        model,
+        temperature,
+        max_tokens: outputTokens,
+        messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+        ...(expectsJson ? { response_format: { type: "json_object" } } : {}),
+      };
+      if (provider === "custom" && expectsJson) {
+        fallbackBody = { model, temperature, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] };
+      }
+    }
+    return NextResponse.json({ target: target.toString(), provider, requestBody, fallbackBody }, { headers: { "Cache-Control": "no-store" } });
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 50000);
 
