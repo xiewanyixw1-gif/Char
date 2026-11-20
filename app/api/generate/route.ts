@@ -4,7 +4,7 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 
 type GenerateRequest = {
-  mode?: "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "test-json" | "models";
+  mode?: "character-create" | "character-extract" | "character-create-core" | "character-create-story" | "character-create-visual" | "character-extract-core" | "character-extract-story" | "character-extract-visual" | "world" | "revise" | "check" | "test" | "test-json" | "models";
   section?: RevisionSection;
   prompt?: string;
   preset?: {
@@ -28,6 +28,17 @@ const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行
 const TEST_JSON_SYSTEM = "这是生成格式兼容测试。只返回合法 JSON 对象：{\"ok\":true,\"message\":\"生成兼容\"}。不要 Markdown、解释或代码围栏。";
 const VARIABLE_SYSTEM = "变量规范：角色设定、人物小传、世界书和叙事描述中使用角色的真实姓名，不使用 char 或 {{char}} 作为占位；{{user}} 始终代表与角色互动的用户，必须原样保留双花括号变量，不要替 {{user}} 决定言行、台词、心理或过去。";
 const MODULE_BOUNDARIES_SYSTEM = "模块分工规范：人设正文只写角色当前稳定的核心、性格、心理、习惯、关系模式和行为逻辑；人物小传只写按年龄发生的事件、选择、经历、关系变化及后果；生图外貌只写视觉特征；世界书只写外部背景与 NPC 资料；开场白只写当前互动。不得把同一内容换句话重复到多个模块，不要输出‘这是一个群像世界’‘这是群像叙事’等创作说明。";
+
+function characterSegmentSystem(mode: string) {
+  const extracting = mode.startsWith("character-extract-");
+  const rule = extracting
+    ? "忠实提取用户资料中已经明确的信息，未明确的字段使用空字符串，不得擅自补全事实。"
+    : "根据用户的人设方向合理创作，但不得违背用户指定的身份、年龄、关系、背景或禁忌。";
+  if (mode.endsWith("-core")) return `你是专业角色设定编辑。${rule} 本次只返回合法 JSON 对象，且只能包含 name, gender, note, nickname, signature, age, suffix, language, persona, userRelationship, relationshipStage, connectionReason。persona 使用角色真实姓名，集中写当前稳定的人物核心、身份生活、表面与内在性格、欲望恐惧、缺点边界、兴趣喜恶、健康习惯、情感观、重要关系、情绪反应、语言与行为逻辑、日常作息、擅长与不擅长及人物反差，不重复人物小传事件和外貌细节。不要 Markdown、解释或代码围栏。`;
+  if (mode.endsWith("-story")) return `你是专业角色经历与开场编辑。${rule} 本次只返回合法 JSON 对象，且只能包含 greetings, greetingModes, biography。greetings 至少 1 条并符合 User 当前关系、关系阶段和交集原因；greetingModes 与 greetings 等长，每项只能是 online 或 offline，适合时各生成线上和线下开场，不替 {{user}} 决定言行或心理。biography 严格使用“## 成长脉络”、0-6岁（童年）、7-12岁（小学）、13-15岁（初中）、16-18岁（高中）、19-22岁（大学）、23-现在（社会）、“## 对未来的期望”结构；超过当前年龄的阶段写“尚未经历”，每阶段事件不同并形成因果推进。不要重复人设正文，不要 Markdown、解释或代码围栏。`;
+  if (mode.endsWith("-visual")) return `你是专业角色视觉设定编辑。${rule} 本次只返回合法 JSON 对象，且只能包含 appearance, conflicts。appearance 只写可以直接画出来的外观年龄、体型、五官、发型、服饰、辨识特征、神态与视觉气质，不复制性格和经历。conflicts 只列出确实需要用户确认的矛盾或缺失信息，没有则为空字符串。不要 Markdown、解释或代码围栏。`;
+  return "";
+}
 
 function revisionSystem(section?: RevisionSection) {
   const shared = "你正在根据用户的修改建议优化已经生成的角色卡。一次只解决用户明确指出的当前问题；必须逐字保留与本次问题无关的设定，不得顺带润色、删减、扩写或重写其他内容。不要解释修改过程，不要输出前言、Markdown 或代码围栏。";
@@ -194,7 +205,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "接口地址必须是可公开访问的 HTTPS 地址" }, { status: 400 });
   }
 
-  const baseSystem = mode === "world"
+  const segmentedSystem = characterSegmentSystem(mode);
+  const baseSystem = segmentedSystem || (mode === "world"
     ? WORLD_SYSTEM
     : mode === "check"
       ? CONSISTENCY_SYSTEM
@@ -206,12 +218,13 @@ export async function POST(request: Request) {
         ? revisionSystem(section)
         : mode === "character-create"
           ? CHARACTER_CREATE_SYSTEM
-          : CHARACTER_EXTRACT_SYSTEM;
+          : CHARACTER_EXTRACT_SYSTEM);
   const system = mode === "test" || mode === "test-json" ? baseSystem : `${baseSystem}\n${VARIABLE_SYSTEM}\n${MODULE_BOUNDARIES_SYSTEM}`;
   const textRevision = mode === "revise" && ["persona", "biography", "appearance", "conflicts"].includes(section ?? "");
   const expectsJson = mode !== "test" && !textRevision;
+  const outputTokens = mode === "test" || mode === "test-json" ? 128 : segmentedSystem ? 4500 : 8000;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
+  const timeout = setTimeout(() => controller.abort(), 50000);
 
   try {
     let response: Response;
@@ -223,7 +236,7 @@ export async function POST(request: Request) {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify({ model, max_tokens: mode === "test" || mode === "test-json" ? 128 : 8000, temperature, system, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model, max_tokens: outputTokens, temperature, system, messages: [{ role: "user", content: prompt }] }),
         signal: controller.signal,
       });
     } else if (provider === "gemini") {
@@ -233,7 +246,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature, maxOutputTokens: mode === "test" || mode === "test-json" ? 128 : 8192, responseMimeType: expectsJson ? "application/json" : "text/plain" },
+          generationConfig: { temperature, maxOutputTokens: outputTokens, responseMimeType: expectsJson ? "application/json" : "text/plain" },
         }),
         signal: controller.signal,
       });
@@ -241,7 +254,7 @@ export async function POST(request: Request) {
       const compatibleBody: Record<string, unknown> = {
         model,
         temperature,
-        max_tokens: mode === "test" || mode === "test-json" ? 128 : 8000,
+        max_tokens: outputTokens,
         messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
       };
       if (expectsJson) compatibleBody.response_format = { type: "json_object" };

@@ -10,7 +10,7 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
 type GreetingMode = "online" | "offline";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
-type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "test-json";
+type ModelMode = "character-create" | "character-extract" | "character-create-core" | "character-create-story" | "character-create-visual" | "character-extract-core" | "character-extract-story" | "character-extract-visual" | "world" | "revise" | "check" | "test" | "test-json";
 
 type CharacterDraft = {
   name: string;
@@ -1345,15 +1345,21 @@ export default function Home() {
       return;
     }
     setBusy("character");
-    setNotice(generationMode === "create" ? "正在按照你的想法创作完整角色卡…" : "正在提取角色设定…");
+    setNotice("正在生成第 1/3 部分：基础信息与人设正文…");
     try {
-      const text = await callModel(
-        generationMode === "create" ? "character-create" : "character-extract",
-        withLibrary(generationMode === "create"
-          ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`
-          : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`),
-      );
-      const parsed = parseGeneratedJson<Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] }>(text);
+      const prompt = withLibrary(generationMode === "create"
+        ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`
+        : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`);
+      const prefix = generationMode === "create" ? "character-create" : "character-extract";
+      const coreText = await callModel(`${prefix}-core` as ModelMode, prompt);
+      const core = parseGeneratedJson<Partial<CharacterDraft>>(coreText);
+      setNotice("正在生成第 2/3 部分：成长经历与开场白…");
+      const storyText = await callModel(`${prefix}-story` as ModelMode, `${prompt}\n\n【前一部分已确定的核心资料】\n${JSON.stringify(core)}`);
+      const story = parseGeneratedJson<Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] }>(storyText);
+      setNotice("正在生成第 3/3 部分：生图外貌与冲突检查…");
+      const visualText = await callModel(`${prefix}-visual` as ModelMode, `${prompt}\n\n【已确定的核心资料】\n${JSON.stringify(core)}\n\n【已确定的成长与开场资料】\n${JSON.stringify(story)}`);
+      const visual = parseGeneratedJson<Partial<CharacterDraft>>(visualText);
+      const parsed = { ...core, ...story, ...visual };
       pushUndo("生成完整角色卡");
       setDraft((current) => {
         const generatedGreetings = Array.isArray(parsed.greetings) && parsed.greetings.length

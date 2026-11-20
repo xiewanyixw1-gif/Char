@@ -52,6 +52,12 @@ test("stores and switches independent API site presets", async () => {
   assert.match(route, /TEST_JSON_SYSTEM/);
   assert.match(route, /response_format/);
   assert.match(route, /max_tokens/);
+  assert.match(source, /正在生成第 1\/3 部分/);
+  assert.match(source, /character-create-core/);
+  assert.match(source, /character-create-story/);
+  assert.match(source, /character-create-visual/);
+  assert.match(route, /characterSegmentSystem/);
+  assert.match(route, /50000/);
 });
 
 test("allows deleting a character directly from the character library", async () => {
@@ -150,6 +156,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v11/);
+  assert.match(serviceWorker, /char-shell-v12/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
