@@ -151,6 +151,9 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /for \(const \[index, request\] of requests\.entries\(\)\)/);
   assert.match(page, /保存图片/);
   assert.match(page, /saveImageUrl/);
+  assert.match(page, /navigator\.canShare/);
+  assert.match(page, /存储图像/);
+  assert.match(page, /image-save-overlay/);
   assert.match(page, /optimizeImageForStorage/);
   assert.match(page, /canvas\.toDataURL\("image\/jpeg"/);
   assert.match(page, /已压缩并设为/);
@@ -162,6 +165,7 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(imageRoute, /payload\.artifacts/);
   assert.match(imageRoute, /返回字段/);
   assert.match(css, /\.image-studio-grid/);
+  assert.match(css, /\.image-save-preview/);
 });
 
 test("ships installable app assets and removes the starter preview", async () => {
@@ -174,6 +178,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v16/);
+  assert.match(serviceWorker, /char-shell-v17/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

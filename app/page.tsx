@@ -454,31 +454,59 @@ function saveFile(filename: string, content: string, type = "text/plain;charset=
   }, 1500);
 }
 
-async function saveImageUrl(imageUrl: string, filename: string) {
+type ImageSaveResult = "shared" | "downloaded" | "preview" | "cancelled";
+
+function dataUrlBlob(imageUrl: string) {
+  const match = imageUrl.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) return null;
+  const mimeType = match[1] || "image/png";
+  const raw = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
+  const bytes = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSaveResult> {
   const safeName = filename.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim() || "Char_角色图片.png";
-  let downloadUrl = imageUrl;
-  let revokeUrl = false;
-  try {
-    const response = await fetch(imageUrl);
-    if (!response.ok) throw new Error("download failed");
-    downloadUrl = URL.createObjectURL(await response.blob());
-    revokeUrl = true;
-  } catch {
-    // Cross-origin image hosts may block reads; the direct URL still lets the user save the original.
+  let blob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
+  if (!blob) {
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) throw new Error("download failed");
+      blob = await response.blob();
+    } catch {
+      blob = null;
+    }
   }
+  if (blob && typeof navigator.share === "function") {
+    const extension = blob.type.includes("jpeg") ? "jpg" : blob.type.includes("webp") ? "webp" : "png";
+    const normalizedName = safeName.replace(/\.[^.]+$/, `.${extension}`);
+    const file = new File([blob], normalizedName, { type: blob.type || "image/png" });
+    if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: normalizedName });
+        return "shared";
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return "cancelled";
+      }
+    }
+  }
+  const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (appleMobile) return "preview";
+  if (!blob) return "preview";
+  const downloadUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = downloadUrl;
   anchor.download = safeName;
   anchor.rel = "noopener noreferrer";
-  if (!revokeUrl) anchor.target = "_blank";
   anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   window.setTimeout(() => {
     anchor.remove();
-    if (revokeUrl) URL.revokeObjectURL(downloadUrl);
+    URL.revokeObjectURL(downloadUrl);
   }, 1500);
-  return revokeUrl || imageUrl.startsWith("data:");
+  return "downloaded";
 }
 
 async function optimizeImageForStorage(imageUrl: string, target: "avatar" | "cover") {
@@ -498,7 +526,7 @@ async function optimizeImageForStorage(imageUrl: string, target: "avatar" | "cov
       element.src = sourceUrl;
     });
     const maxEdge = target === "avatar" ? 512 : 1280;
-    const maxCharacters = target === "avatar" ? 360_000 : 720_000;
+    const maxCharacters = target === "avatar" ? 180_000 : 480_000;
     const initialScale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const scale = initialScale * Math.pow(0.86, attempt);
@@ -645,6 +673,7 @@ export default function Home() {
   const [imagePrompt, setImagePrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("文字、水印、Logo、低清晰度、畸形手部、重复肢体");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [savePreviewImage, setSavePreviewImage] = useState<GeneratedImage | null>(null);
   const [imageCount, setImageCount] = useState(1);
   const [selectedImageEmotions, setSelectedImageEmotions] = useState<string[]>(["自然"]);
   const [imageBusy, setImageBusy] = useState(false);
@@ -1426,8 +1455,13 @@ export default function Home() {
   };
 
   const downloadGeneratedImage = async (image: GeneratedImage, index: number) => {
-    const savedDirectly = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}_${index + 1}.png`);
-    setNotice(savedDirectly ? `第 ${index + 1} 张图片已保存` : "图片站点限制了直接下载，已为你打开原图，可长按或右键保存");
+    const result = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}_${index + 1}.png`);
+    if (result === "shared") setNotice("系统分享面板已打开，请选择“存储图像”保存到相册");
+    if (result === "downloaded") setNotice(`第 ${index + 1} 张图片已下载`);
+    if (result === "preview") {
+      setSavePreviewImage(image);
+      setNotice("请长按大图并选择“存储到照片”或“存储图像”");
+    }
   };
 
   const toggleImageEmotion = (emotion: string) => {
@@ -2838,6 +2872,15 @@ export default function Home() {
               <label><span>快速切换</span><select value={imageApi.id ?? ""} onChange={(event) => { const selected = savedImageApis.find((preset) => preset.id === event.target.value); if (selected) chooseSavedImageApi(selected); }}><option value="">选择已保存的生图站点</option>{savedImageApis.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.model}</option>)}</select></label>
               <button onClick={() => { setApiKind("image"); setView("api"); }}>管理生图 API</button>
             </section>
+            {savePreviewImage && (
+              <div className="image-save-overlay" role="dialog" aria-modal="true" aria-label="保存生成图片" onClick={() => setSavePreviewImage(null)}>
+                <div className="image-save-preview" onClick={(event) => event.stopPropagation()}>
+                  <div><span>SAVE IMAGE</span><b>长按图片保存到相册</b><button onClick={() => setSavePreviewImage(null)} aria-label="关闭保存图片预览">×</button></div>
+                  <img src={savePreviewImage.imageUrl} alt={`${draft.name || "角色"}${savePreviewImage.emotion}情绪原图`} />
+                  <p>在 iPhone 上长按图片，选择“存储到照片”或“存储图像”。如果系统分享面板可用，下次点击“保存图片”会直接打开分享面板。</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
