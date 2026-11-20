@@ -4,7 +4,7 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
 
 type GenerateRequest = {
-  mode?: "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "models";
+  mode?: "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "test-json" | "models";
   section?: RevisionSection;
   prompt?: string;
   preset?: {
@@ -25,6 +25,7 @@ const WORLD_SYSTEM = `你是世界观与配角资料编辑。将输入拆成独�
 const CONSISTENCY_SYSTEM = `你是角色卡质量审校员。检查基础信息、人设正文、User 当前关系、关系阶段、交集原因、开场白、人物小传、生图外貌、冲突说明与世界书之间是否存在事实矛盾、年龄或时间线冲突、关系冲突、交集原因不符合背景、开场白越过当前关系阶段、角色语气偏离、开场白内容与 online/offline 类型不匹配、同一内容在多个模块重复、人物小传不同年龄阶段重复同一事件或结论、不可视觉化的外貌描述、用户变量误用，以及替 {{user}} 决定言行或心理的问题。只返回合法 JSON 数组，每项包含 section, issue, suggestion。section 只能是 basic、persona、greetings、biography、appearance、world、conflicts 之一；关系前提或开场问题归入 greetings。issue 用简洁中文说明一个具体问题；suggestion 只说明怎样修复这一项，不得要求重写其他内容。一个对象只能包含一个问题；没有发现问题时返回空数组。不要改写原文，不要输出 Markdown 或解释。`;
 
 const TEST_SYSTEM = "这是 API 连通性测试。严格按照用户要求进行简短回复。";
+const TEST_JSON_SYSTEM = "这是生成格式兼容测试。只返回合法 JSON 对象：{\"ok\":true,\"message\":\"生成兼容\"}。不要 Markdown、解释或代码围栏。";
 const VARIABLE_SYSTEM = "变量规范：角色设定、人物小传、世界书和叙事描述中使用角色的真实姓名，不使用 char 或 {{char}} 作为占位；{{user}} 始终代表与角色互动的用户，必须原样保留双花括号变量，不要替 {{user}} 决定言行、台词、心理或过去。";
 const MODULE_BOUNDARIES_SYSTEM = "模块分工规范：人设正文只写角色当前稳定的核心、性格、心理、习惯、关系模式和行为逻辑；人物小传只写按年龄发生的事件、选择、经历、关系变化及后果；生图外貌只写视觉特征；世界书只写外部背景与 NPC 资料；开场白只写当前互动。不得把同一内容换句话重复到多个模块，不要输出‘这是一个群像世界’‘这是群像叙事’等创作说明。";
 
@@ -57,6 +58,16 @@ function blockedHost(hostname: string) {
   const private172 = host.match(/^172\.(\d{1,3})\./);
   if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return true;
   return /^169\.254\./.test(host);
+}
+
+function upstreamErrorMessage(payload: Record<string, unknown>, rawText = "") {
+  const error = payload.error as { message?: string; code?: string } | string | undefined;
+  const direct = payload.message ?? payload.detail ?? payload.msg;
+  const message = typeof error === "string" ? error : error?.message;
+  if (message) return message;
+  if (typeof direct === "string") return direct;
+  const plain = rawText.trim();
+  return plain && !/^</.test(plain) ? plain.slice(0, 500) : "";
 }
 
 function normalizedEndpoint(provider: Provider, rawEndpoint: string, model: string, apiKey: string) {
@@ -189,12 +200,14 @@ export async function POST(request: Request) {
       ? CONSISTENCY_SYSTEM
     : mode === "test"
       ? TEST_SYSTEM
+      : mode === "test-json"
+        ? TEST_JSON_SYSTEM
       : mode === "revise"
         ? revisionSystem(section)
         : mode === "character-create"
           ? CHARACTER_CREATE_SYSTEM
           : CHARACTER_EXTRACT_SYSTEM;
-  const system = mode === "test" ? baseSystem : `${baseSystem}\n${VARIABLE_SYSTEM}\n${MODULE_BOUNDARIES_SYSTEM}`;
+  const system = mode === "test" || mode === "test-json" ? baseSystem : `${baseSystem}\n${VARIABLE_SYSTEM}\n${MODULE_BOUNDARIES_SYSTEM}`;
   const textRevision = mode === "revise" && ["persona", "biography", "appearance", "conflicts"].includes(section ?? "");
   const expectsJson = mode !== "test" && !textRevision;
   const controller = new AbortController();
@@ -210,7 +223,7 @@ export async function POST(request: Request) {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify({ model, max_tokens: 5000, temperature, system, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model, max_tokens: mode === "test" || mode === "test-json" ? 128 : 8000, temperature, system, messages: [{ role: "user", content: prompt }] }),
         signal: controller.signal,
       });
     } else if (provider === "gemini") {
@@ -220,28 +233,46 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature, responseMimeType: expectsJson ? "application/json" : "text/plain" },
+          generationConfig: { temperature, maxOutputTokens: mode === "test" || mode === "test-json" ? 128 : 8192, responseMimeType: expectsJson ? "application/json" : "text/plain" },
         }),
         signal: controller.signal,
       });
     } else {
-      response = await fetch(target, {
+      const compatibleBody: Record<string, unknown> = {
+        model,
+        temperature,
+        max_tokens: mode === "test" || mode === "test-json" ? 128 : 8000,
+        messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      };
+      if (expectsJson) compatibleBody.response_format = { type: "json_object" };
+      const sendCompatibleRequest = (requestBody: Record<string, unknown>) => fetch(target, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          temperature,
-          messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
+      response = await sendCompatibleRequest(compatibleBody);
+      if (provider === "custom" && expectsJson && (response.status === 400 || response.status === 422)) {
+        const firstError = await response.clone().text();
+        if (/response_format|json_object|max_tokens|unsupported|unknown (field|parameter)/i.test(firstError)) {
+          response = await sendCompatibleRequest({
+            model,
+            temperature,
+            messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+          });
+        }
+      }
     }
 
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const rawPayload = await response.text();
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(rawPayload) as Record<string, unknown>;
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
-      const apiError = payload.error as { message?: string } | string | undefined;
-      const message = typeof apiError === "string" ? apiError : apiError?.message;
-      return NextResponse.json({ error: message || `上游接口返回 ${response.status}` }, { status: response.status < 500 ? response.status : 502 });
+      return NextResponse.json({ error: upstreamErrorMessage(payload, rawPayload) || `上游接口返回 ${response.status}` }, { status: response.status < 500 ? response.status : 502 });
     }
 
     let text = "";
@@ -252,9 +283,13 @@ export async function POST(request: Request) {
       const candidates = payload.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }> | undefined;
       text = candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
     } else {
-      const choices = payload.choices as Array<{ message?: { content?: string | Array<{ text?: string }> } }> | undefined;
+      const choices = payload.choices as Array<{ text?: string; message?: { content?: string | Array<{ text?: string; content?: string }> } }> | undefined;
       const content = choices?.[0]?.message?.content;
-      text = typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => part.text ?? "").join("\n") : "";
+      text = typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.map((part) => part.text ?? part.content ?? "").join("\n")
+          : choices?.[0]?.text ?? (typeof payload.output_text === "string" ? payload.output_text : typeof payload.text === "string" ? payload.text : "");
     }
 
     if (!text.trim()) return NextResponse.json({ error: "接口已响应，但没有返回文本内容" }, { status: 502 });

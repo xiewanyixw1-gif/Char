@@ -10,7 +10,7 @@ type Provider = "openai" | "anthropic" | "gemini" | "custom";
 type GenerationMode = "create" | "extract";
 type GreetingMode = "online" | "offline";
 type RevisionSection = "basic" | "persona" | "greetings" | "biography" | "appearance" | "world" | "conflicts";
-type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "check" | "test";
+type ModelMode = "character-create" | "character-extract" | "world" | "revise" | "check" | "test" | "test-json";
 
 type CharacterDraft = {
   name: string;
@@ -367,7 +367,26 @@ function endpointHost(endpoint: string) {
 
 function cleanJsonText(text: string) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return (fenced?.[1] ?? text).trim();
+  const candidate = (fenced?.[1] ?? text).replace(/^\uFEFF/, "").trim();
+  const objectStart = candidate.indexOf("{");
+  const arrayStart = candidate.indexOf("[");
+  const start = objectStart === -1 ? arrayStart : arrayStart === -1 ? objectStart : Math.min(objectStart, arrayStart);
+  if (start === -1) return candidate;
+  const opener = candidate[start];
+  const end = candidate.lastIndexOf(opener === "{" ? "}" : "]");
+  return end > start ? candidate.slice(start, end + 1) : candidate.slice(start);
+}
+
+function parseGeneratedJson<T>(text: string): T {
+  const cleaned = cleanJsonText(text);
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const looksIncomplete = (cleaned.startsWith("{") && !cleaned.endsWith("}")) || (cleaned.startsWith("[") && !cleaned.endsWith("]"));
+    throw new Error(looksIncomplete
+      ? "模型返回内容不完整，可能达到输出长度上限。请换用支持更长输出的模型，或暂时停用部分知识库后重试。"
+      : "模型已响应，但没有返回可读取的 JSON。请在 API 页面点击“测试生成兼容”，或更换支持结构化输出的模型。");
+  }
 }
 
 function saveFile(filename: string, content: string, type = "text/plain;charset=utf-8") {
@@ -519,6 +538,8 @@ export default function Home() {
   const [imageModelOptions, setImageModelOptions] = useState<string[]>([]);
   const [loadingImageModels, setLoadingImageModels] = useState(false);
   const [apiKind, setApiKind] = useState<"creation" | "image">("creation");
+  const [generationError, setGenerationError] = useState("");
+  const [imageError, setImageError] = useState("");
   const [busy, setBusy] = useState<"character" | "world" | "check" | "test" | null>(null);
   const [revising, setRevising] = useState<RevisionSection | null>(null);
   const [revisionPreview, setRevisionPreview] = useState<RevisionPreview | null>(null);
@@ -1199,6 +1220,7 @@ export default function Home() {
   };
 
   const generateRoleImage = async () => {
+    setImageError("");
     if (!imagePrompt.trim()) {
       setNotice("请先从角色资料填充或手动填写生图提示词");
       return;
@@ -1220,7 +1242,9 @@ export default function Home() {
       setGeneratedImage({ imageUrl: payload.imageUrl, revisedPrompt: payload.revisedPrompt });
       setNotice(`“${draft.name || "当前角色"}”的图片已生成`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "角色图片生成失败");
+      const message = error instanceof Error ? error.message : "角色图片生成失败";
+      setImageError(message);
+      setNotice(message);
     } finally {
       setImageBusy(false);
     }
@@ -1303,12 +1327,19 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode, prompt, section, preset: api }),
     });
-    const payload = (await response.json()) as { text?: string; error?: string };
-    if (!response.ok) throw new Error(payload.error || "生成失败，请检查 API 配置");
+    const raw = await response.text();
+    let payload: { text?: string; error?: string } = {};
+    try {
+      payload = JSON.parse(raw) as { text?: string; error?: string };
+    } catch {
+      if (!response.ok) throw new Error(`网站生成接口返回 ${response.status}，请稍后重试或检查部署状态`);
+    }
+    if (!response.ok) throw new Error(payload.error || `生成接口返回 ${response.status}，请检查 API 配置`);
     return payload.text ?? "";
   };
 
   const generateCharacter = async () => {
+    setGenerationError("");
     if (!draft.source.trim()) {
       setNotice(generationMode === "create" ? "请先描述你想要的人设" : "请先粘贴小说、设定或聊天记录");
       return;
@@ -1322,7 +1353,7 @@ export default function Home() {
           ? `【我想要的人设】\n${draft.source}\n\n【故事与世界背景】\n${draft.background || "未提供，请围绕人设合理创作"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`
           : `【角色原始资料】\n${draft.source}\n\n【补充世界背景】\n${draft.background || "未提供"}\n\n【已填写的 User 关系前提】\n当前关系：${draft.userRelationship || "未填写"}\n关系阶段：${draft.relationshipStage || "未填写"}\n交集与持续联系原因：${draft.connectionReason || "未填写"}`),
       );
-      const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] };
+      const parsed = parseGeneratedJson<Partial<CharacterDraft> & { greetings?: string[]; greetingModes?: GreetingMode[] }>(text);
       pushUndo("生成完整角色卡");
       setDraft((current) => {
         const generatedGreetings = Array.isArray(parsed.greetings) && parsed.greetings.length
@@ -1339,7 +1370,9 @@ export default function Home() {
       });
       setNotice("角色卡已生成；每个部分都可以填写建议并让 AI 单独优化");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "生成失败");
+      const message = error instanceof Error ? error.message : "生成失败";
+      setGenerationError(message);
+      setNotice(message);
     } finally {
       setBusy(null);
     }
@@ -1394,14 +1427,14 @@ export default function Home() {
 
       let previewValue: unknown;
       if (section === "basic") {
-        const parsed = JSON.parse(cleanJsonText(text)) as Partial<CharacterDraft>;
+        const parsed = parseGeneratedJson<Partial<CharacterDraft>>(text);
         const basicKeys: Array<keyof CharacterDraft> = ["name", "gender", "note", "nickname", "signature", "age", "suffix", "language"];
         previewValue = basicKeys.reduce<Record<string, string>>((result, key) => {
           result[key] = typeof parsed[key] === "string" ? parsed[key] as string : draft[key] as string;
           return result;
         }, {});
       } else if (section === "greetings") {
-        const parsed = JSON.parse(cleanJsonText(text)) as { greetings?: unknown; greetingModes?: unknown } | unknown[];
+        const parsed = parseGeneratedJson<{ greetings?: unknown; greetingModes?: unknown } | unknown[]>(text);
         const rawGreetings = Array.isArray(parsed) ? parsed : parsed.greetings;
         if (!Array.isArray(rawGreetings)) throw new Error("开场白格式不正确，请重试");
         const revisedGreetings = rawGreetings.filter((item): item is string => typeof item === "string");
@@ -1411,7 +1444,7 @@ export default function Home() {
           greetingModes: alignGreetingModes(revisedGreetings, Array.isArray(parsed) ? draft.greetingModes : parsed.greetingModes),
         };
       } else if (section === "world") {
-        const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
+        const parsed = parseGeneratedJson<Array<Partial<WorldEntry>>>(text);
         if (!Array.isArray(parsed)) throw new Error("世界书格式不正确，请重试");
         previewValue = normalizeWorldEntries(parsed);
       } else {
@@ -1555,7 +1588,7 @@ export default function Home() {
         withLibrary(`【完整人设参考】\n${draft.persona || "未生成"}\n\n【与 User 的关系前提】\n当前关系：${draft.userRelationship || "未明确"}\n关系阶段：${draft.relationshipStage || "未明确"}\n交集与持续联系原因：${draft.connectionReason || "未明确"}\n\n【当前仅这一条开场白】\n${JSON.stringify({ greetings: [draft.greetings[index]], greetingModes: [draft.greetingModes[index] || inferGreetingMode(draft.greetings[index])] })}\n\n【用户修改建议】\n${suggestion}\n\n只处理这一条，必须符合现有关系阶段与交集原因，保留“${greetingModeLabel(draft.greetingModes[index] || inferGreetingMode(draft.greetings[index]))}”类型，并仅返回包含 greetings 与 greetingModes 的 JSON 对象。`),
         "greetings",
       );
-      const parsed = JSON.parse(cleanJsonText(text)) as { greetings?: unknown } | unknown[];
+      const parsed = parseGeneratedJson<{ greetings?: unknown } | unknown[]>(text);
       const rawGreetings = Array.isArray(parsed) ? parsed : parsed.greetings;
       if (!Array.isArray(rawGreetings) || typeof rawGreetings[0] !== "string") throw new Error("单条开场白格式不正确，请重试");
       setRevisionPreview({
@@ -1579,7 +1612,7 @@ export default function Home() {
     setNotice("正在检查角色卡内部一致性…");
     try {
       const text = await callModel("check", withLibrary(JSON.stringify({ draft, worldBook: entries }, null, 2)));
-      const parsed = JSON.parse(cleanJsonText(text));
+      const parsed = parseGeneratedJson<unknown>(text);
       if (!Array.isArray(parsed)) throw new Error("检查结果格式不正确，请重试");
       const allowedSections: RevisionSection[] = ["basic", "persona", "greetings", "biography", "appearance", "world", "conflicts"];
       const inferSection = (textValue: string): RevisionSection => {
@@ -1620,7 +1653,7 @@ export default function Home() {
         "world",
         withLibrary(`【世界背景】\n${draft.background || "未单独提供"}\n\n【角色资料】\n${draft.source || draft.persona || "未提供"}`),
       );
-      const parsed = JSON.parse(cleanJsonText(text)) as Array<Partial<WorldEntry>>;
+      const parsed = parseGeneratedJson<Array<Partial<WorldEntry>>>(text);
       if (!Array.isArray(parsed)) throw new Error("模型返回的世界书格式不正确");
       pushUndo("生成世界书");
       const generatedEntries = normalizeWorldEntries(parsed);
@@ -1644,12 +1677,17 @@ export default function Home() {
 
   const testApi = async () => {
     setBusy("test");
-    setNotice("正在测试连接…");
+    setGenerationError("");
+    setNotice("正在测试连接与结构化生成…");
     try {
-      const text = await callModel("test", "请只回复：连接成功");
-      setNotice(text.trim().slice(0, 60) || "连接成功");
+      const text = await callModel("test-json", "返回一个包含 ok=true 和 message=生成兼容 的 JSON 对象");
+      const result = parseGeneratedJson<{ ok?: boolean; message?: string }>(text);
+      if (result.ok !== true) throw new Error("接口可以响应，但模型没有按结构化格式返回，请更换模型后重试");
+      setNotice(result.message || "连接与生成格式均兼容");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "连接失败");
+      const message = error instanceof Error ? error.message : "连接失败";
+      setGenerationError(message);
+      setNotice(message);
     } finally {
       setBusy(null);
     }
@@ -2155,6 +2193,7 @@ export default function Home() {
                 <button className="secondary-button" onClick={generateCharacter} disabled={busy !== null}>{generationMode === "create" ? "直接生成完整角色卡" : "提取角色信息"}</button>
                 <button className="text-button" onClick={generateWorld} disabled={busy !== null}>根据背景生成世界书 →</button>
               </div>
+              {generationError && <div className="generation-error" role="alert"><div><b>这次没有生成成功</b><p>{generationError}</p></div><button onClick={() => { setApiKind("creation"); setView("api"); }}>检查创作 API</button></div>}
             </section>
 
             <section className="editor-card">
@@ -2542,6 +2581,7 @@ export default function Home() {
                 <button className="quiet-button" onClick={fillCharacterImagePrompt}>重新读取角色资料</button>
                 <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? "生成中…" : "生成角色图片"}<span>→</span></button>
               </div>
+              {imageError && <div className="generation-error" role="alert"><div><b>这次没有生成图片</b><p>{imageError}</p></div><button onClick={() => { setApiKind("image"); setView("api"); }}>检查生图 API</button></div>}
             </section>
 
             <section className="api-preset-switcher image-api-summary" aria-label="当前生图 API">
@@ -2647,7 +2687,7 @@ export default function Home() {
               <div className="inline-actions api-actions">
                 {api.provider === "custom" && <button className="secondary-button" onClick={() => saveCurrentApi(false)}>{api.id ? "保存当前修改" : "保存为新预设"}</button>}
                 {api.provider === "custom" && api.id && <button className="quiet-button" onClick={() => saveCurrentApi(true)}>另存为新预设</button>}
-                <button className="primary-button compact" onClick={testApi} disabled={busy !== null}>{busy === "test" ? "测试中…" : "测试连接"}<span>→</span></button>
+                <button className="primary-button compact" onClick={testApi} disabled={busy !== null}>{busy === "test" ? "测试中…" : "测试生成兼容"}<span>→</span></button>
                 <button className="text-button danger" onClick={clearCurrentApiKey}>清除密钥</button>
               </div>
             </section>

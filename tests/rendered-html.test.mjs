@@ -36,13 +36,22 @@ test("keeps multiple world books bound to each character", async () => {
 });
 
 test("stores and switches independent API site presets", async () => {
-  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const [source, route] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
+  ]);
   assert.match(source, /models: string\[\]/);
   assert.match(source, /快速切换/);
   assert.match(source, /另存为新预设/);
   assert.match(source, /已切换到站点预设/);
   assert.match(source, /创作 API/);
   assert.match(source, /生图 API/);
+  assert.match(source, /测试生成兼容/);
+  assert.match(source, /generation-error/);
+  assert.match(source, /parseGeneratedJson/);
+  assert.match(route, /TEST_JSON_SYSTEM/);
+  assert.match(route, /response_format/);
+  assert.match(route, /max_tokens/);
 });
 
 test("allows deleting a character directly from the character library", async () => {
@@ -141,6 +150,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v10/);
+  assert.match(serviceWorker, /char-shell-v11/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
