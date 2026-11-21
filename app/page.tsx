@@ -348,10 +348,6 @@ function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function wait(milliseconds: number) {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
 function cloneDraft(draft: CharacterDraft): CharacterDraft {
   return { ...draft, greetings: [...draft.greetings], greetingModes: [...draft.greetingModes] };
 }
@@ -776,11 +772,9 @@ export default function Home() {
   const [savedImageApis, setSavedImageApis] = useState<ImagePreset[]>([]);
   const [imagePrompt, setImagePrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("文字、水印、Logo、低清晰度、畸形手部、重复肢体");
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
-  const [activeGeneratedImageIndex, setActiveGeneratedImageIndex] = useState(0);
-  const [imagePreview, setImagePreview] = useState<{ image: GeneratedImage; index: number; saveHint: boolean } | null>(null);
-  const [imageCount, setImageCount] = useState(1);
-  const [selectedImageEmotions, setSelectedImageEmotions] = useState<string[]>(["自然"]);
+  const [generatedImage, setGeneratedImage] = useState<GeneratedImage | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ image: GeneratedImage; saveHint: boolean } | null>(null);
+  const [selectedImageEmotion, setSelectedImageEmotion] = useState("自然");
   const [imageBusy, setImageBusy] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -949,8 +943,7 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     releaseGeneratedObjectUrls();
-    setGeneratedImages([]);
-    setActiveGeneratedImageIndex(0);
+    setGeneratedImage(null);
     setImagePreview(null);
     setImagePrompt("");
   }, [activeCharacterId, ready]);
@@ -990,8 +983,6 @@ export default function Home() {
   }, [draft]);
 
   const activeWorldBook = useMemo(() => worldBooks.find((book) => book.id === activeWorldBookId) ?? worldBooks[0], [activeWorldBookId, worldBooks]);
-  const activeGeneratedImage = generatedImages[activeGeneratedImageIndex] ?? generatedImages[0];
-
   const enabledLibraryText = useMemo(() => library
     .filter((item) => item.enabled && item.content.trim())
     .map((item, index) => `【资料库 ${index + 1}｜${item.category}｜${item.title || "未命名"}】\n${item.content.trim()}`)
@@ -1502,83 +1493,56 @@ export default function Home() {
     }
     setImageBusy(true);
     releaseGeneratedObjectUrls();
-    setGeneratedImages([]);
-    setActiveGeneratedImageIndex(0);
+    setGeneratedImage(null);
     setImagePreview(null);
-    const emotions = selectedImageEmotions.length ? selectedImageEmotions : ["自然"];
-    const requests = Array.from({ length: imageCount }, (_, index) => {
-      const emotion = emotions[index % emotions.length];
-      const emotionPrompt = IMAGE_EMOTIONS.find((item) => item.value === emotion)?.prompt ?? emotion;
-      const prompt = `${imagePrompt}\n\n本张情绪：${emotionPrompt}。保持同一角色的脸型、五官、发型、发色、服装核心特征和年龄感一致，只改变符合情绪的表情与细微姿态。`;
-      return { emotion, prompt };
-    });
-    setNotice(`将独立调用生图 API ${imageCount} 次，每次生成 1 张…`);
+    const emotion = selectedImageEmotion || "自然";
+    const emotionPrompt = IMAGE_EMOTIONS.find((item) => item.value === emotion)?.prompt ?? emotion;
+    const prompt = `${imagePrompt}\n\n本张情绪：${emotionPrompt}。保持同一角色的脸型、五官、发型、发色、服装核心特征和年龄感一致，只改变符合情绪的表情与细微姿态。`;
+    setNotice(`正在生成 1 张角色图片 · ${emotion}…`);
     try {
-      const completed: GeneratedImage[] = [];
-      const failed: string[] = [];
-      for (const [index, request] of requests.entries()) {
-        setNotice(`正在独立调用第 ${index + 1}/${requests.length} 次 · 每次 1 张 · ${request.emotion}…`);
+      const response = await fetch("/api/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, negativePrompt, preset: imageApi }),
+      });
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      let result: GeneratedImage;
+      if (response.ok && contentType.startsWith("image/")) {
+        const blob = await response.blob();
+        let imageUrl = "";
         try {
-          const response = await fetch("/api/image", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
-          });
-          const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-          if (response.ok && contentType.startsWith("image/")) {
-            const blob = await response.blob();
-            let imageUrl = "";
-            try {
-              imageUrl = URL.createObjectURL(blob);
-              generatedObjectUrls.current.push(imageUrl);
-            } catch {
-              imageUrl = await blobDataUrl(blob);
-            }
-            const generated = { id: uid(), imageUrl, emotion: request.emotion };
-            completed.push(generated);
-            setGeneratedImages([...completed]);
-            if (completed.length === 1) setActiveGeneratedImageIndex(0);
-            if (index < requests.length - 1) await wait(1200);
-            continue;
-          }
-          const rawText = await response.text();
-          let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
-          try {
-            payload = JSON.parse(rawText) as typeof payload;
-          } catch {
-            throw new Error(response.status === 502 || response.status === 504
-              ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
-              : `网站生图接口返回了无法读取的内容（${response.status}）`);
-          }
-          if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
-          let imageUrl = payload.imageUrl;
-          const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
-          if (localBlob) {
-            try {
-              const objectUrl = URL.createObjectURL(localBlob);
-              imageUrl = objectUrl;
-              generatedObjectUrls.current.push(objectUrl);
-            } catch {
-              imageUrl = payload.imageUrl;
-            }
-          }
-          const generated = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion };
-          completed.push(generated);
-          setGeneratedImages([...completed]);
-          if (completed.length === 1) setActiveGeneratedImageIndex(0);
-        } catch (error) {
-          const message = friendlyImageGenerationError(error);
-          failed.push(`第 ${index + 1} 次：${message}`);
+          imageUrl = URL.createObjectURL(blob);
+          generatedObjectUrls.current.push(imageUrl);
+        } catch {
+          imageUrl = await blobDataUrl(blob);
         }
-        if (index < requests.length - 1) await wait(1200);
+        result = { id: uid(), imageUrl, emotion };
+      } else {
+        const rawText = await response.text();
+        let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
+        try {
+          payload = JSON.parse(rawText) as typeof payload;
+        } catch {
+          throw new Error(response.status === 502 || response.status === 504
+            ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
+            : `网站生图接口返回了无法读取的内容（${response.status}）`);
+        }
+        if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
+        let imageUrl = payload.imageUrl;
+        const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
+        if (localBlob) {
+          try {
+            const objectUrl = URL.createObjectURL(localBlob);
+            imageUrl = objectUrl;
+            generatedObjectUrls.current.push(objectUrl);
+          } catch {
+            imageUrl = payload.imageUrl;
+          }
+        }
+        result = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion };
       }
-      if (!completed.length) {
-        throw new Error(failed[0] || "角色图片生成失败");
-      }
-      setGeneratedImages(completed);
-      setNotice(failed.length
-        ? `已生成 ${completed.length} 张，另有 ${failed.length} 张失败：${failed[0]}`
-        : `“${draft.name || "当前角色"}”的 ${completed.length} 张图片已生成`);
+      setGeneratedImage(result);
+      setNotice(`“${draft.name || "当前角色"}”的 1 张图片已生成`);
     } catch (error) {
       const message = friendlyImageGenerationError(error);
       setImageError(message);
@@ -1606,31 +1570,19 @@ export default function Home() {
     }
   };
 
-  const downloadGeneratedImage = async (image: GeneratedImage, index: number) => {
+  const downloadGeneratedImage = async (image: GeneratedImage) => {
     try {
-      const result = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}_${index + 1}.png`);
+      const result = await saveImageUrl(image.imageUrl, `${draft.name || "char"}_${image.emotion}.png`);
       if (result === "shared") setNotice("系统分享面板已打开，请选择“存储图像”保存到相册");
-      if (result === "downloaded") setNotice(`第 ${index + 1} 张图片已下载`);
+      if (result === "downloaded") setNotice("图片已下载");
       if (result === "preview") {
-        setImagePreview({ image, index, saveHint: true });
+        setImagePreview({ image, saveHint: true });
         setNotice("已在应用内打开大图；长按保存后，点右上角 × 即可回到生图页面");
       }
     } catch {
-      setImagePreview({ image, index, saveHint: true });
+      setImagePreview({ image, saveHint: true });
       setNotice("浏览器无法直接保存，已打开站内大图，请长按保存到相册");
     }
-  };
-
-  const moveImagePreview = (direction: -1 | 1) => {
-    if (!imagePreview || !generatedImages.length) return;
-    const index = Math.min(generatedImages.length - 1, Math.max(0, imagePreview.index + direction));
-    setImagePreview({ image: generatedImages[index], index, saveHint: imagePreview.saveHint });
-  };
-
-  const toggleImageEmotion = (emotion: string) => {
-    setSelectedImageEmotions((current) => current.includes(emotion)
-      ? current.filter((item) => item !== emotion)
-      : [...current, emotion]);
   };
 
   const loadModels = async () => {
@@ -2978,20 +2930,19 @@ export default function Home() {
               </article>
 
               <div className="image-result-gallery">
-                {activeGeneratedImage ? (<>
-                  {generatedImages.length > 1 && <nav className="image-result-tabs" aria-label="切换生成图片">{generatedImages.map((image, index) => <button key={image.id} className={index === activeGeneratedImageIndex ? "active" : ""} onClick={() => setActiveGeneratedImageIndex(index)}><span>{index + 1}</span>{image.emotion}</button>)}</nav>}
-                  <article className="image-result-card" key={activeGeneratedImage.id}>
-                    <img src={activeGeneratedImage.imageUrl} alt={`${draft.name || "角色"}${activeGeneratedImage.emotion}情绪生成图`} />
-                    <span className="image-emotion-label">第 {activeGeneratedImageIndex + 1}/{generatedImages.length} 张 · {activeGeneratedImage.emotion}</span>
+                {generatedImage ? (<>
+                  <article className="image-result-card" key={generatedImage.id}>
+                    <img src={generatedImage.imageUrl} alt={`${draft.name || "角色"}${generatedImage.emotion}情绪生成图`} />
+                    <span className="image-emotion-label">本次生成 · {generatedImage.emotion}</span>
                     <div className="image-result-actions">
-                      <button onClick={() => applyGeneratedImage(activeGeneratedImage, "avatar")}>设为头像</button>
-                      <button onClick={() => applyGeneratedImage(activeGeneratedImage, "cover")}>设为卡片背景</button>
-                      <button onClick={() => downloadGeneratedImage(activeGeneratedImage, activeGeneratedImageIndex)}>保存图片</button>
-                      <button onClick={() => setImagePreview({ image: activeGeneratedImage, index: activeGeneratedImageIndex, saveHint: false })}>查看大图</button>
+                      <button onClick={() => applyGeneratedImage(generatedImage, "avatar")}>设为头像</button>
+                      <button onClick={() => applyGeneratedImage(generatedImage, "cover")}>设为卡片背景</button>
+                      <button onClick={() => downloadGeneratedImage(generatedImage)}>保存图片</button>
+                      <button onClick={() => setImagePreview({ image: generatedImage, saveHint: false })}>查看大图</button>
                     </div>
                   </article>
                 </>) : (
-                  <article className="image-result-card image-result-placeholder"><div className="image-result-empty"><span>IMAGE</span><b>生成结果会显示在这里</b><small>可一次生成多张，并分别保存图片</small></div></article>
+                  <article className="image-result-card image-result-placeholder"><div className="image-result-empty"><span>IMAGE</span><b>生成结果会显示在这里</b><small>每次稳定生成一张图片</small></div></article>
                 )}
               </div>
             </section>
@@ -3003,13 +2954,12 @@ export default function Home() {
                 <TextAreaField label="负面提示词" value={negativePrompt} onChange={setNegativePrompt} rows={10} placeholder="不希望出现的元素，如文字、水印、错误肢体……" />
               </div>
               <div className="image-generation-options">
-                <label className="image-count-picker"><span>生成数量</span><select aria-label="选择本次生成图片数量" value={imageCount} onChange={(event) => setImageCount(Number(event.target.value))}>{[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>
-                <fieldset className="image-emotion-picker"><legend>选择情绪（可多选）</legend><div>{IMAGE_EMOTIONS.map((emotion) => <button type="button" key={emotion.value} className={selectedImageEmotions.includes(emotion.value) ? "active" : ""} aria-pressed={selectedImageEmotions.includes(emotion.value)} onClick={() => toggleImageEmotion(emotion.value)}>{emotion.value}</button>)}</div><small>选择 4 张会独立调用 API 4 次，每次固定生成 1 张；单次失败不影响已成功图片。</small></fieldset>
+                <fieldset className="image-emotion-picker"><legend>选择本张图片的情绪</legend><div>{IMAGE_EMOTIONS.map((emotion) => <button type="button" key={emotion.value} className={selectedImageEmotion === emotion.value ? "active" : ""} aria-pressed={selectedImageEmotion === emotion.value} onClick={() => setSelectedImageEmotion(emotion.value)}>{emotion.value}</button>)}</div><small>每次只生成一张；需要另一种情绪时，选择后再次生成。</small></fieldset>
               </div>
               <div className="inline-actions image-generate-actions">
                 <label className="image-quick-size"><span>生成尺寸</span><select aria-label="选择本次生成尺寸" value={IMAGE_SIZE_VALUES.has(imageApi.size) ? imageApi.size : "custom"} onChange={(event) => event.target.value !== "custom" && setImageApi((current) => ({ ...current, size: event.target.value }))}><optgroup label="GPT 图片尺寸">{GPT_IMAGE_SIZES.map((size) => <option key={`studio-gpt-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><optgroup label="NAI 图片尺寸">{NAI_IMAGE_SIZES.map((size) => <option key={`studio-nai-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><option value="custom">自定义：{imageApi.size || "未填写"}</option></select></label>
                 <button className="quiet-button" onClick={fillCharacterImagePrompt}>重新读取角色资料</button>
-                <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? `正在进行 ${imageCount} 次独立调用…` : `独立调用 ${imageCount} 次生成 ${imageCount} 张`}<span>→</span></button>
+                <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? "正在生成 1 张…" : "生成 1 张角色图片"}<span>→</span></button>
               </div>
               {imageError && <div className="generation-error" role="alert"><div><b>这次没有生成图片</b><p>{imageError}</p></div><button onClick={() => { setApiKind("image"); setView("api"); }}>检查生图 API</button></div>}
             </section>
@@ -3022,10 +2972,9 @@ export default function Home() {
             {imagePreview && (
               <div className="image-save-overlay" role="dialog" aria-modal="true" aria-label="查看生成图片" onClick={() => setImagePreview(null)}>
                 <div className="image-save-preview" onClick={(event) => event.stopPropagation()}>
-                  <div className="image-save-heading"><span>{imagePreview.saveHint ? "SAVE IMAGE" : "IMAGE PREVIEW"}</span><b>第 {imagePreview.index + 1}/{generatedImages.length} 张 · {imagePreview.image.emotion}</b><button onClick={() => setImagePreview(null)} aria-label="关闭图片预览">×</button></div>
+                  <div className="image-save-heading"><span>{imagePreview.saveHint ? "SAVE IMAGE" : "IMAGE PREVIEW"}</span><b>{imagePreview.image.emotion}</b><button onClick={() => setImagePreview(null)} aria-label="关闭图片预览">×</button></div>
                   <img src={imagePreview.image.imageUrl} alt={`${draft.name || "角色"}${imagePreview.image.emotion}情绪原图`} />
-                  {generatedImages.length > 1 && <div className="image-preview-controls"><button onClick={() => moveImagePreview(-1)} disabled={imagePreview.index === 0}>← 上一张</button><span>{imagePreview.index + 1} / {generatedImages.length}</span><button onClick={() => moveImagePreview(1)} disabled={imagePreview.index === generatedImages.length - 1}>下一张 →</button></div>}
-                  <p>{imagePreview.saveHint ? "在 iPhone 上长按图片并选择“存储到照片”；保存后仍停留在 Char，点右上角 × 返回生图页面。" : "使用上一张、下一张依次查看全部结果；需要保存时关闭预览后点击对应图片的“保存图片”。"}</p>
+                  <p>{imagePreview.saveHint ? "在 iPhone 上长按图片并选择“存储到照片”；保存后仍停留在 Char，点右上角 × 返回生图页面。" : "关闭预览后可保存图片，或设为当前角色的头像和卡片背景。"}</p>
                 </div>
               </div>
             )}
