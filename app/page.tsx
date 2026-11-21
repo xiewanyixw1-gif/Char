@@ -549,6 +549,15 @@ function dataUrlBlob(imageUrl: string) {
   }
 }
 
+function blobDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("图片读取失败"));
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function friendlyImageGenerationError(error: unknown) {
   const message = error instanceof Error ? error.message : "角色图片生成失败";
   if (/did not match the expected pattern|invalid url|url pattern/i.test(message)) {
@@ -559,6 +568,8 @@ function friendlyImageGenerationError(error: unknown) {
 
 async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSaveResult> {
   const safeName = filename.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim() || "Char_角色图片.png";
+  const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (appleMobile) return "preview";
   let blob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
   if (!blob) {
     try {
@@ -582,8 +593,6 @@ async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSa
       }
     }
   }
-  const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  if (appleMobile) return "preview";
   if (!blob) return "preview";
   const downloadUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -603,21 +612,22 @@ async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSa
 async function optimizeImageForStorage(imageUrl: string, target: "avatar" | "cover") {
   let sourceUrl = imageUrl;
   let temporaryUrl = "";
-  if (!imageUrl.startsWith("data:")) {
+  if (/^https:\/\//i.test(imageUrl)) {
     const response = await fetch(imageUrl);
     if (!response.ok) throw new Error("无法读取远程图片");
     temporaryUrl = URL.createObjectURL(await response.blob());
     sourceUrl = temporaryUrl;
   }
+  let image: HTMLImageElement | null = null;
   try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    image = await new Promise<HTMLImageElement>((resolve, reject) => {
       const element = new Image();
       element.onload = () => resolve(element);
       element.onerror = () => reject(new Error("图片解码失败"));
       element.src = sourceUrl;
     });
-    const maxEdge = target === "avatar" ? 512 : 1280;
-    const maxCharacters = target === "avatar" ? 180_000 : 480_000;
+    const maxEdge = target === "avatar" ? 420 : 900;
+    const maxCharacters = target === "avatar" ? 120_000 : 260_000;
     const initialScale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const scale = initialScale * Math.pow(0.86, attempt);
@@ -630,10 +640,13 @@ async function optimizeImageForStorage(imageUrl: string, target: "avatar" | "cov
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const optimized = canvas.toDataURL("image/jpeg", Math.max(0.5, 0.84 - attempt * 0.07));
+      canvas.width = 1;
+      canvas.height = 1;
       if (optimized.length <= maxCharacters || attempt === 5) return optimized;
     }
     throw new Error("图片压缩失败");
   } finally {
+    if (image) image.src = "";
     if (temporaryUrl) URL.revokeObjectURL(temporaryUrl);
   }
 }
@@ -1511,6 +1524,23 @@ export default function Home() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
           });
+          const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+          if (response.ok && contentType.startsWith("image/")) {
+            const blob = await response.blob();
+            let imageUrl = "";
+            try {
+              imageUrl = URL.createObjectURL(blob);
+              generatedObjectUrls.current.push(imageUrl);
+            } catch {
+              imageUrl = await blobDataUrl(blob);
+            }
+            const generated = { id: uid(), imageUrl, emotion: request.emotion };
+            completed.push(generated);
+            setGeneratedImages([...completed]);
+            if (completed.length === 1) setActiveGeneratedImageIndex(0);
+            if (index < requests.length - 1) await wait(1200);
+            continue;
+          }
           const rawText = await response.text();
           let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
           try {
@@ -1566,13 +1596,13 @@ export default function Home() {
       else setCharacterCover(optimized);
       setNotice(`已压缩并设为“${draft.name || "当前角色"}”的${target === "avatar" ? "头像" : "卡片背景"}，原图仍可单独保存`);
     } catch (error) {
-      if (!image.imageUrl.startsWith("data:")) {
+      if (/^https:\/\//i.test(image.imageUrl)) {
         if (target === "avatar") setCharacterAvatar(image.imageUrl);
         else setCharacterCover(image.imageUrl);
         setNotice("图片站点不允许压缩读取，已使用原图链接；建议同时保存原图备份");
         return;
       }
-      setNotice(error instanceof Error ? `${error.message}，请先保存原图后上传较小版本` : "图片处理失败，请先保存原图后上传较小版本");
+      setNotice(error instanceof Error ? `${error.message}；未保存临时图片地址，请降低生成尺寸后重试` : "图片处理失败；未保存临时图片地址，请降低生成尺寸后重试");
     }
   };
 
@@ -1583,7 +1613,7 @@ export default function Home() {
       if (result === "downloaded") setNotice(`第 ${index + 1} 张图片已下载`);
       if (result === "preview") {
         setImagePreview({ image, index, saveHint: true });
-        setNotice("请长按大图并选择“存储到照片”或“存储图像”");
+        setNotice("已在应用内打开大图；长按保存后，点右上角 × 即可回到生图页面");
       }
     } catch {
       setImagePreview({ image, index, saveHint: true });
@@ -2995,7 +3025,7 @@ export default function Home() {
                   <div className="image-save-heading"><span>{imagePreview.saveHint ? "SAVE IMAGE" : "IMAGE PREVIEW"}</span><b>第 {imagePreview.index + 1}/{generatedImages.length} 张 · {imagePreview.image.emotion}</b><button onClick={() => setImagePreview(null)} aria-label="关闭图片预览">×</button></div>
                   <img src={imagePreview.image.imageUrl} alt={`${draft.name || "角色"}${imagePreview.image.emotion}情绪原图`} />
                   {generatedImages.length > 1 && <div className="image-preview-controls"><button onClick={() => moveImagePreview(-1)} disabled={imagePreview.index === 0}>← 上一张</button><span>{imagePreview.index + 1} / {generatedImages.length}</span><button onClick={() => moveImagePreview(1)} disabled={imagePreview.index === generatedImages.length - 1}>下一张 →</button></div>}
-                  <p>{imagePreview.saveHint ? "在 iPhone 上长按图片，选择“存储到照片”或“存储图像”。" : "使用上一张、下一张依次查看全部结果；需要保存时关闭预览后点击对应图片的“保存图片”。"}</p>
+                  <p>{imagePreview.saveHint ? "在 iPhone 上长按图片并选择“存储到照片”；保存后仍停留在 Char，点右上角 × 返回生图页面。" : "使用上一张、下一张依次查看全部结果；需要保存时关闭预览后点击对应图片的“保存图片”。"}</p>
                 </div>
               </div>
             )}

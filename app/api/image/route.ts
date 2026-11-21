@@ -80,6 +80,25 @@ function extractImage(payload: Record<string, unknown>) {
   return null;
 }
 
+function binaryImageResponse(imageUrl: string) {
+  const match = imageUrl.match(/^data:([^;,]+)?;base64,([\s\S]+)$/i);
+  if (!match) return null;
+  try {
+    const normalized = match[2].replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    const body = Buffer.from(normalized, "base64");
+    if (!body.length) return null;
+    return new Response(body, {
+      headers: {
+        "Content-Type": match[1] || "image/png",
+        "Cache-Control": "private, no-store, max-age=0",
+        "X-Char-Image": "binary",
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(request: Request) {
   let body: ImageRequest;
   try {
@@ -165,8 +184,13 @@ export async function POST(request: Request) {
     });
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (response.ok && contentType.startsWith("image/")) {
-      const base64 = Buffer.from(await response.arrayBuffer()).toString("base64");
-      return NextResponse.json({ imageUrl: `data:${contentType.split(";")[0]};base64,${base64}` });
+      return new Response(await response.arrayBuffer(), {
+        headers: {
+          "Content-Type": contentType.split(";")[0],
+          "Cache-Control": "private, no-store, max-age=0",
+          "X-Char-Image": "binary",
+        },
+      });
     }
 
     const rawText = await response.text();
@@ -189,6 +213,8 @@ export async function POST(request: Request) {
       const keys = Object.keys(payload).slice(0, 8).join("、");
       return NextResponse.json({ error: `接口已响应，但没有返回可识别的图片。返回字段：${keys || "空响应"}` }, { status: 502 });
     }
+    const binaryResponse = binaryImageResponse(extracted.imageUrl);
+    if (binaryResponse) return binaryResponse;
     return NextResponse.json(extracted);
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError" ? "生图超时，请稍后重试或降低图片尺寸" : "无法连接生图接口，请检查地址、模型、密钥和网络";

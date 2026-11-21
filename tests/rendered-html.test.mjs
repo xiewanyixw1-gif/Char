@@ -167,6 +167,9 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /replace\(\/-\/g, "\+"\)/);
   assert.match(page, /generatedObjectUrls/);
   assert.match(page, /URL\.createObjectURL\(localBlob\)/);
+  assert.match(page, /contentType\.startsWith\("image\/"\)/);
+  assert.match(page, /const appleMobile/);
+  assert.match(page, /if \(appleMobile\) return "preview"/);
   assert.match(page, /friendlyImageGenerationError/);
   assert.match(page, /imageUrl = payload\.imageUrl/);
   assert.match(page, /独立调用第/);
@@ -181,6 +184,8 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(imageRoute, /无法拉取生图模型/);
   assert.match(imageRoute, /b64_json/);
   assert.match(imageRoute, /n: 1/);
+  assert.match(imageRoute, /binaryImageResponse/);
+  assert.match(imageRoute, /X-Char-Image/);
   assert.match(imageRoute, /contentType\.startsWith\("image\/"\)/);
   assert.match(imageRoute, /payload\.artifacts/);
   assert.match(imageRoute, /返回字段/);
@@ -198,6 +203,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v21/);
+  assert.match(serviceWorker, /char-shell-v22/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
