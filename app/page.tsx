@@ -360,6 +360,61 @@ function cloneEntries(entries: WorldEntry[]): WorldEntry[] {
   return entries.map((entry) => ({ ...entry }));
 }
 
+function splitWorldEntryKeys(keys: string) {
+  return keys.split(/[,，、\n]/).map((key) => key.trim()).filter(Boolean);
+}
+
+function toSillyTavernWorldBook(entries: WorldEntry[], commentPrefix = "") {
+  return {
+    entries: Object.fromEntries(entries.map((entry, index) => {
+      const key = splitWorldEntryKeys(entry.keys);
+      return [String(index), {
+        uid: index,
+        key,
+        keysecondary: [],
+        comment: `${commentPrefix}${entry.title || `条目 ${index + 1}`}`,
+        content: entry.content,
+        constant: key.length === 0,
+        vectorized: false,
+        selective: true,
+        selectiveLogic: 0,
+        addMemo: true,
+        order: Number.isFinite(entry.priority) ? entry.priority : 100 - index,
+        position: 0,
+        disable: !entry.enabled,
+        ignoreBudget: false,
+        excludeRecursion: false,
+        preventRecursion: false,
+        matchPersonaDescription: false,
+        matchCharacterDescription: false,
+        matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false,
+        matchScenario: false,
+        matchCreatorNotes: false,
+        delayUntilRecursion: 0,
+        probability: 100,
+        useProbability: true,
+        depth: 4,
+        outletName: "",
+        group: "",
+        groupOverride: false,
+        groupWeight: 100,
+        scanDepth: null,
+        caseSensitive: null,
+        matchWholeWords: null,
+        useGroupScoring: null,
+        automationId: "",
+        role: 0,
+        sticky: null,
+        cooldown: null,
+        delay: null,
+        triggers: [],
+        displayIndex: index,
+      }];
+    })),
+  };
+}
+
 function freshDraft(): CharacterDraft {
   return cloneDraft(EMPTY_DRAFT);
 }
@@ -1418,52 +1473,43 @@ export default function Home() {
       const prompt = `${imagePrompt}\n\n本张情绪：${emotionPrompt}。保持同一角色的脸型、五官、发型、发色、服装核心特征和年龄感一致，只改变符合情绪的表情与细微姿态。`;
       return { emotion, prompt };
     });
-    setNotice(`正在生成 ${imageCount} 张图片，情绪：${requests.map((item) => item.emotion).join("、")}…`);
+    setNotice(`将独立调用生图 API ${imageCount} 次，每次生成 1 张…`);
     try {
       const completed: GeneratedImage[] = [];
       const failed: string[] = [];
       for (const [index, request] of requests.entries()) {
-        setNotice(`正在生成第 ${index + 1}/${requests.length} 张 · ${request.emotion}…`);
-        let generated: GeneratedImage | null = null;
-        let lastError = "角色图片生成失败";
-        for (let attempt = 0; attempt < 3 && !generated; attempt += 1) {
+        setNotice(`正在独立调用第 ${index + 1}/${requests.length} 次 · 每次 1 张 · ${request.emotion}…`);
+        try {
+          const response = await fetch("/api/image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
+          });
+          const rawText = await response.text();
+          let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
           try {
-            const response = await fetch("/api/image", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: request.prompt, negativePrompt, preset: imageApi }),
-            });
-            const rawText = await response.text();
-            let payload: { imageUrl?: string; revisedPrompt?: string; error?: string } = {};
-            try {
-              payload = JSON.parse(rawText) as typeof payload;
-            } catch {
-              throw new Error(response.status === 502 || response.status === 504
-                ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
-                : `网站生图接口返回了无法读取的内容（${response.status}）`);
-            }
-            if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
-            let imageUrl = payload.imageUrl;
-            const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
-            if (localBlob) {
-              imageUrl = URL.createObjectURL(localBlob);
-              generatedObjectUrls.current.push(imageUrl);
-            }
-            generated = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion };
-          } catch (error) {
-            lastError = error instanceof Error ? error.message : "角色图片生成失败";
-            if (attempt < 2) {
-              setNotice(`第 ${index + 1} 张暂时失败，${attempt + 1}/2 次自动重试中…`);
-              await wait(2500 * (attempt + 1));
-            }
+            payload = JSON.parse(rawText) as typeof payload;
+          } catch {
+            throw new Error(response.status === 502 || response.status === 504
+              ? "生图等待超时，请稍后重试或换用更快的尺寸与模型"
+              : `网站生图接口返回了无法读取的内容（${response.status}）`);
           }
-        }
-        if (generated) {
+          if (!response.ok || !payload.imageUrl) throw new Error(payload.error || `生图接口没有返回图片（${response.status}）`);
+          let imageUrl = payload.imageUrl;
+          const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
+          if (localBlob) {
+            imageUrl = URL.createObjectURL(localBlob);
+            generatedObjectUrls.current.push(imageUrl);
+          }
+          const generated = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion };
           completed.push(generated);
           setGeneratedImages([...completed]);
           if (completed.length === 1) setActiveGeneratedImageIndex(0);
-        } else failed.push(lastError);
-        if (index < requests.length - 1) await wait(1800);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "角色图片生成失败";
+          failed.push(`第 ${index + 1} 次：${message}`);
+        }
+        if (index < requests.length - 1) await wait(1200);
       }
       if (!completed.length) {
         throw new Error(failed[0] || "角色图片生成失败");
@@ -2101,36 +2147,19 @@ export default function Home() {
 
   const exportWorld = () => {
     const activeBook = worldBooks.find((book) => book.id === activeWorldBookId);
-    const worldBook = {
-      name: activeBook?.name || `${draft.name || "角色"}的世界书`,
-      format: "char-world-book-v1",
-      entries: entries.map((entry, index) => ({
-        uid: index,
-        key: entry.keys.split(/[,，、]/).map((key) => key.trim()).filter(Boolean),
-        comment: entry.title,
-        content: entry.content,
-        constant: false,
-        selective: true,
-        order: entry.priority,
-        position: 0,
-        disable: !entry.enabled,
-        category: entry.category,
-      })),
-    };
-    saveFile(`${worldBook.name || "未命名世界书"}.json`, JSON.stringify(worldBook, null, 2), "application/json;charset=utf-8");
-    setNotice(`世界书“${worldBook.name}”已导出`);
+    const name = activeBook?.name || `${draft.name || "角色"}的世界书`;
+    const worldBook = toSillyTavernWorldBook(entries);
+    saveFile(`${name || "未命名世界书"}.json`, JSON.stringify(worldBook, null, 2), "application/json;charset=utf-8");
+    setNotice(`世界书“${name}”已按 SillyTavern 原生格式导出`);
   };
 
   const exportSelectedWorldBooks = () => {
     const latestBooks = booksWithCurrentEntries();
     const selected = selectedWorldBookIds.length ? latestBooks.filter((book) => selectedWorldBookIds.includes(book.id)) : latestBooks;
-    saveFile(`${draft.name || "char"}_世界书批量导出.json`, JSON.stringify({
-      format: "char-world-book-bundle-v1",
-      characterName: draft.name || "char",
-      exportedAt: new Date().toISOString(),
-      books: selected,
-    }, null, 2), "application/json;charset=utf-8");
-    setNotice(`已批量导出 ${selected.length} 本世界书`);
+    const mergedEntries = selected.flatMap((book) => book.entries.map((entry) => ({ ...entry, title: `【${book.name}】${entry.title}` })));
+    const worldBook = toSillyTavernWorldBook(mergedEntries);
+    saveFile(`${draft.name || "char"}_世界书合集_SillyTavern.json`, JSON.stringify(worldBook, null, 2), "application/json;charset=utf-8");
+    setNotice(`已将 ${selected.length} 本世界书合并为可直接导入酒馆的世界书合集`);
   };
 
   const importWorldBooks = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -2841,7 +2870,7 @@ export default function Home() {
 
             <div className="world-toolbar">
               <div><b>{activeWorldBook?.name || "未命名世界书"}</b><span> · {entries.length} 条设定</span></div>
-              <button className="quiet-button" onClick={exportWorld}>单独导出此书 JSON</button>
+              <button className="quiet-button" onClick={exportWorld}>导出酒馆世界书 JSON</button>
             </div>
 
             <section className="world-list">
@@ -2914,12 +2943,12 @@ export default function Home() {
               </div>
               <div className="image-generation-options">
                 <label className="image-count-picker"><span>生成数量</span><select aria-label="选择本次生成图片数量" value={imageCount} onChange={(event) => setImageCount(Number(event.target.value))}>{[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>
-                <fieldset className="image-emotion-picker"><legend>选择情绪（可多选）</legend><div>{IMAGE_EMOTIONS.map((emotion) => <button type="button" key={emotion.value} className={selectedImageEmotions.includes(emotion.value) ? "active" : ""} aria-pressed={selectedImageEmotions.includes(emotion.value)} onClick={() => toggleImageEmotion(emotion.value)}>{emotion.value}</button>)}</div><small>生成多张时会按选中顺序循环分配情绪；未选择时使用自然神态。</small></fieldset>
+                <fieldset className="image-emotion-picker"><legend>选择情绪（可多选）</legend><div>{IMAGE_EMOTIONS.map((emotion) => <button type="button" key={emotion.value} className={selectedImageEmotions.includes(emotion.value) ? "active" : ""} aria-pressed={selectedImageEmotions.includes(emotion.value)} onClick={() => toggleImageEmotion(emotion.value)}>{emotion.value}</button>)}</div><small>选择 4 张会独立调用 API 4 次，每次固定生成 1 张；单次失败不影响已成功图片。</small></fieldset>
               </div>
               <div className="inline-actions image-generate-actions">
                 <label className="image-quick-size"><span>生成尺寸</span><select aria-label="选择本次生成尺寸" value={IMAGE_SIZE_VALUES.has(imageApi.size) ? imageApi.size : "custom"} onChange={(event) => event.target.value !== "custom" && setImageApi((current) => ({ ...current, size: event.target.value }))}><optgroup label="GPT 图片尺寸">{GPT_IMAGE_SIZES.map((size) => <option key={`studio-gpt-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><optgroup label="NAI 图片尺寸">{NAI_IMAGE_SIZES.map((size) => <option key={`studio-nai-${size.value}`} value={size.value}>{size.label}</option>)}</optgroup><option value="custom">自定义：{imageApi.size || "未填写"}</option></select></label>
                 <button className="quiet-button" onClick={fillCharacterImagePrompt}>重新读取角色资料</button>
-                <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? `正在生成 ${imageCount} 张…` : `生成 ${imageCount} 张角色图片`}<span>→</span></button>
+                <button className="primary-button compact" onClick={generateRoleImage} disabled={imageBusy}>{imageBusy ? `正在进行 ${imageCount} 次独立调用…` : `独立调用 ${imageCount} 次生成 ${imageCount} 张`}<span>→</span></button>
               </div>
               {imageError && <div className="generation-error" role="alert"><div><b>这次没有生成图片</b><p>{imageError}</p></div><button onClick={() => { setApiKind("image"); setView("api"); }}>检查生图 API</button></div>}
             </section>

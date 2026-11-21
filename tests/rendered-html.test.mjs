@@ -33,6 +33,12 @@ test("keeps multiple world books bound to each character", async () => {
   assert.match(source, /worldBooks: WorldBookRecord\[\]/);
   assert.match(source, /保存并绑定/);
   assert.match(source, /AI 再次生成时会另存一本/);
+  assert.match(source, /toSillyTavernWorldBook/);
+  assert.match(source, /entries: Object\.fromEntries/);
+  assert.match(source, /keysecondary: \[\]/);
+  assert.match(source, /disable: !entry\.enabled/);
+  assert.match(source, /导出酒馆世界书 JSON/);
+  assert.doesNotMatch(source, /format: "char-world-book-v1"/);
 });
 
 test("stores and switches independent API site presets", async () => {
@@ -81,7 +87,7 @@ test("supports local issue repair, built-in knowledge, and batch archives", asyn
   assert.match(page, /仅修复这一项/);
   assert.match(page, /char-npc-ensemble/);
   assert.match(page, /char-character-bundle-v1/);
-  assert.match(page, /char-world-book-bundle-v1/);
+  assert.match(page, /世界书合集_SillyTavern/);
   assert.match(route, /一次只解决用户明确指出的当前问题/);
   assert.match(css, /overflow-x: hidden/);
   assert.match(css, /grid-template-columns: repeat\(6/);
@@ -159,7 +165,9 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /replace\(\/-\/g, "\+"\)/);
   assert.match(page, /generatedObjectUrls/);
   assert.match(page, /URL\.createObjectURL\(localBlob\)/);
-  assert.match(page, /自动重试中/);
+  assert.match(page, /独立调用第/);
+  assert.match(page, /每次固定生成 1 张/);
+  assert.doesNotMatch(page, /attempt < 3/);
   assert.match(page, /image-result-tabs/);
   assert.match(page, /optimizeImageForStorage/);
   assert.match(page, /canvas\.toDataURL\("image\/jpeg"/);
@@ -168,6 +176,7 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(imageRoute, /normalizedModelsEndpoint/);
   assert.match(imageRoute, /无法拉取生图模型/);
   assert.match(imageRoute, /b64_json/);
+  assert.match(imageRoute, /n: 1/);
   assert.match(imageRoute, /contentType\.startsWith\("image\/"\)/);
   assert.match(imageRoute, /payload\.artifacts/);
   assert.match(imageRoute, /返回字段/);
@@ -185,6 +194,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v19/);
+  assert.match(serviceWorker, /char-shell-v20/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
