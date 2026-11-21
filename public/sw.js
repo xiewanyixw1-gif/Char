@@ -1,4 +1,4 @@
-const CACHE_NAME = "char-shell-v20";
+const CACHE_NAME = "char-shell-v21";
 const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

@@ -39,6 +39,8 @@ test("keeps multiple world books bound to each character", async () => {
   assert.match(source, /disable: !entry\.enabled/);
   assert.match(source, /导出酒馆世界书 JSON/);
   assert.doesNotMatch(source, /format: "char-world-book-v1"/);
+  assert.match(source, /navigator\.share\(shareData\)/);
+  assert.match(source, /anchor\.target = "_blank"/);
 });
 
 test("stores and switches independent API site presets", async () => {
@@ -165,6 +167,8 @@ test("provides a character image studio with independent API presets", async () 
   assert.match(page, /replace\(\/-\/g, "\+"\)/);
   assert.match(page, /generatedObjectUrls/);
   assert.match(page, /URL\.createObjectURL\(localBlob\)/);
+  assert.match(page, /friendlyImageGenerationError/);
+  assert.match(page, /imageUrl = payload\.imageUrl/);
   assert.match(page, /独立调用第/);
   assert.match(page, /每次固定生成 1 张/);
   assert.doesNotMatch(page, /attempt < 3/);
@@ -194,6 +198,6 @@ test("ships installable app assets and removes the starter preview", async () =>
   assert.equal(parsed.name, "Char 角色工作室");
   assert.equal(parsed.display, "standalone");
   assert.equal(parsed.icons.length, 2);
-  assert.match(serviceWorker, /char-shell-v20/);
+  assert.match(serviceWorker, /char-shell-v21/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });

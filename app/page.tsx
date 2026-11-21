@@ -496,20 +496,38 @@ function directModelText(provider: Provider, payload: Record<string, unknown>) {
       : choices?.[0]?.text ?? (typeof payload.output_text === "string" ? payload.output_text : typeof payload.text === "string" ? payload.text : "");
 }
 
-function saveFile(filename: string, content: string, type = "text/plain;charset=utf-8") {
+async function saveFile(filename: string, content: string, type = "text/plain;charset=utf-8") {
   const safeName = filename.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim() || "Char_导出文件.txt";
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
+  const mimeType = type.split(";", 1)[0] || "text/plain";
+  const blob = new Blob([content], { type: mimeType });
+  try {
+    const file = new File([blob], safeName, { type: mimeType });
+    const shareData = { files: [file], title: safeName };
+    if (typeof navigator.share === "function" && (!navigator.canShare || navigator.canShare(shareData))) {
+      await navigator.share(shareData);
+      return;
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return;
+  }
+
+  let url = "";
+  try {
+    url = URL.createObjectURL(blob);
+  } catch {
+    url = `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
+  }
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = safeName;
-  anchor.rel = "noopener";
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
   anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   window.setTimeout(() => {
     anchor.remove();
-    URL.revokeObjectURL(url);
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
   }, 1500);
 }
 
@@ -529,6 +547,14 @@ function dataUrlBlob(imageUrl: string) {
   } catch {
     return null;
   }
+}
+
+function friendlyImageGenerationError(error: unknown) {
+  const message = error instanceof Error ? error.message : "角色图片生成失败";
+  if (/did not match the expected pattern|invalid url|url pattern/i.test(message)) {
+    return "手机浏览器无法识别接口返回的图片地址。请确认生图接口是完整的 https:// 地址；若 API 已成功返回图片，刷新应用后再试一次。";
+  }
+  return message;
 }
 
 async function saveImageUrl(imageUrl: string, filename: string): Promise<ImageSaveResult> {
@@ -1498,15 +1524,20 @@ export default function Home() {
           let imageUrl = payload.imageUrl;
           const localBlob = imageUrl.startsWith("data:") ? dataUrlBlob(imageUrl) : null;
           if (localBlob) {
-            imageUrl = URL.createObjectURL(localBlob);
-            generatedObjectUrls.current.push(imageUrl);
+            try {
+              const objectUrl = URL.createObjectURL(localBlob);
+              imageUrl = objectUrl;
+              generatedObjectUrls.current.push(objectUrl);
+            } catch {
+              imageUrl = payload.imageUrl;
+            }
           }
           const generated = { id: uid(), imageUrl, revisedPrompt: payload.revisedPrompt, emotion: request.emotion };
           completed.push(generated);
           setGeneratedImages([...completed]);
           if (completed.length === 1) setActiveGeneratedImageIndex(0);
         } catch (error) {
-          const message = error instanceof Error ? error.message : "角色图片生成失败";
+          const message = friendlyImageGenerationError(error);
           failed.push(`第 ${index + 1} 次：${message}`);
         }
         if (index < requests.length - 1) await wait(1200);
@@ -1519,7 +1550,7 @@ export default function Home() {
         ? `已生成 ${completed.length} 张，另有 ${failed.length} 张失败：${failed[0]}`
         : `“${draft.name || "当前角色"}”的 ${completed.length} 张图片已生成`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "角色图片生成失败";
+      const message = friendlyImageGenerationError(error);
       setImageError(message);
       setNotice(message);
     } finally {
